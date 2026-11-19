@@ -43,6 +43,7 @@ slider36:0<-60,20,0.01>-Lectura: banda 8-15 kHz vs referencia
 slider37:-60<-60,0,0.01>-Lectura: 2-5 kHz sobre el total (dB)
 slider38:0<-1000000000,1000000000,0.000001>-Lectura: escala FFT hacia adelante (diagnostico)
 slider39:0<-1000000000,1000000000,0.000001>-Lectura: escala FFT ida y vuelta (diagnostico)
+slider40:0<0,10,1>-Lectura: intentos en la tabla
 
 in_pin:Entrada L
 in_pin:Entrada R
@@ -484,6 +485,7 @@ function quick() local(a, b, w)
   slider15 = tp_max > 0 ? aclamp(tp_db, -100, 30) : -100; slider16 = aclamp(plr, 0, 100);
   slider18 = aclamp(corr, -1, 1); slider19 = aclamp(mono_loss, -10, 40);
   slider1 = 20 * log10(pr_pk + 0.000000001); slider2 = pr_nact > 0 ? 10 * log10(pr_acc / pr_nact) : -150; slider3 = pr_nact;
+  slider40 = att_n;
 );
 // pesadas: cada 0.5 s
 function stats() local(i, k, c, cnt, p30, b, a, m1, m2, n1, n2, tmax, f, sum, lo, hi, idx, nl, nf, dv, best, tot, rel, p10, p95, bi, cv)
@@ -849,7 +851,8 @@ _lb && drag ? (
 );
 !_lb ? drag = 0;
 mouse_wheel != 0 ? (
-  _w = mouse_wheel / 120;
+  // al menos un paso por movimiento: hacia abajo REAPER puede entregar menos de 120 y el redondeo lo borraba
+  _w = mouse_wheel / 120; _w = _w > 0 ? max(1, floor(_w + 0.5)) : min(-1, -floor(-_w + 0.5));
   hover_id == 1 ? g_set(8, clamp(floor((slider8 + _w * 0.1) * 10 + 0.5) / 10, -6, 0)) :
   hover_id == 2 ? g_set(9, clamp(floor((slider9 + _w * 0.5) * 2 + 0.5) / 2, 0, 20));
   mouse_wheel = 0;

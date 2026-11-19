@@ -143,6 +143,13 @@ Slider N = parámetro N−1 (`TrackFX_GetParam`), se leen después de renderizar
     1.60 dB / 1.03 dB / 54.7 %, se daña); sin Antes o con enlace distinto: estado −1;
   - los 16 presets; y `tests/lint.py`: ningún nombre que difiera solo en mayúsculas (EEL2 no las distingue) ni
     variables o funciones compartidas entre la gráfica y el audio.
+- `tests/ui_test.py`: **23 pruebas con el mouse** (mueven el mouse real, ~3 min) en un REAPER propio que arma
+  `tests/ui_host.lua` (sin `-nonewinst`; los parámetros se leen de un archivo que escribe el anfitrión): arrastrar,
+  doble clic y rueda (arriba y abajo) en Techo TP y PLR mínimo; menús de Exigencia, Curva, Presets, Enlace (enlace 2 →
+  sin Antes) y Modo; Capturar; reiniciar con clic; un play de 22 s + stop agrega un intento y Borrar vacía la tabla.
+  Los clics se inyectan con CGEvent (`tests/click.swift`): con cliclick, REAPER 7.86 a veces no ve el "soltar".
+  Si una acción se pierde se repite una vez y la prueba lo dice. Hallazgo: la rueda hacia abajo no movía los valores
+  (REAPER entrega menos de 120 por paso y el redondeo lo borraba); ahora cada movimiento mueve al menos un paso.
 - `tests/ui_demo.lua`: abre la cadena con la ventana del Medidor (de ahí sale `docs/captura.png`).
 
 Nota: las pruebas necesitan REAPER y Python con numpy, scipy y soundfile (`NUBE_PY=/ruta/a/python tests/run.sh`). Usan
