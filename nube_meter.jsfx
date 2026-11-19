@@ -1,0 +1,1073 @@
+desc:Nube Meter - medidor de master (LUFS, true peak, PLR, estereo, bandas vs referencia, avisos de limitacion)
+//tags: meter loudness lufs true-peak plr lra correlation spectrum analyzer mastering
+//author: Kev Meneses + Claude (Claude Code)
+//license: GPL-3.0-or-later
+//version: 1.0.0
+
+slider1:-150<-150,20,0.01>-Lectura: pico max (dB)
+slider2:-150<-150,20,0.01>-Lectura: RMS activo (dB)
+slider3:0<0,1000000,1>-Lectura: bloques activos
+slider4:0<0,1,1>-Reiniciar
+slider5:0<0,1,1{Medidor (al final del master),Antes (antes del limitador)}>-Modo
+slider6:1<1,4,1>-Enlace (par Antes / Medidor)
+slider7:0<0,6,1{Eladio + Myke,Eladio (Mbappe),Myke (Te imagino),Sean Paul (Like Glue),Nube baja (master X20),Capturada,Sin referencia}>-Curva de referencia
+slider8:-1<-6,0,0.1>-Techo de pico real (dBTP)
+slider9:8<0,20,0.5>-PLR minimo
+slider10:0<0,2,1{Nube baja (calibrado),Estricto,Permisivo}>-Exigencia
+slider11:0<0,16,1{-,Nube baja (calibrado),Streaming seguro (dinamico),Trap / rap fuerte,Drill / rage (muy fuerte),Reggaeton oscuro (mucho sub),Dancehall,Lo-fi / chill (dinamico),Comparar con Nube baja (X20),WhatsApp / auto (version fuerte),Club / DJ,YouTube / podcast,Premaster (antes del master),Stem / exportar,Referencia capturada,Solo picos y volumen,Por defecto}>-Cargar preset
+slider12:-70<-70,10,0.01>-Lectura: LUFS integrado
+slider13:-70<-70,10,0.01>-Lectura: LUFS corto (3 s)
+slider14:-70<-70,10,0.01>-Lectura: LUFS momentaneo
+slider15:-100<-100,30,0.01>-Lectura: pico real max (dBTP)
+slider16:0<0,100,0.01>-Lectura: PLR
+slider17:0<0,50,0.01>-Lectura: LRA
+slider18:0<-1,1,0.0001>-Lectura: correlacion
+slider19:0<-10,40,0.01>-Lectura: perdida en mono (LU)
+slider20:0<-20,20,0.001>-Lectura: voz en kick (dB)
+slider21:0<-20,20,0.001>-Lectura: golpe del kick (dB)
+slider22:0<0,100,0.01>-Lectura: distorsion (%)
+slider23:0<-40,40,0.01>-Lectura: banda mas desviada (dB)
+slider24:0<-40,40,0.01>-Lectura: 2-5 kHz vs referencia (dB)
+slider25:-1<-1,2,1>-Lectura: estado (-1 sin Antes, 0 limpio, 1 al limite, 2 se dana)
+slider26:-1<-1,100000,1>-Lectura: retraso Antes -> Medidor (muestras)
+slider27:0<0,100000,1>-Lectura: kicks detectados
+slider28:0<-60,20,0.01>-Lectura: banda 30-60 Hz vs referencia
+slider29:0<-60,20,0.01>-Lectura: banda 60-120 Hz vs referencia
+slider30:0<-60,20,0.01>-Lectura: banda 120-250 Hz vs referencia
+slider31:0<-60,20,0.01>-Lectura: banda 250-500 Hz vs referencia
+slider32:0<-60,20,0.01>-Lectura: banda 500-1k Hz vs referencia
+slider33:0<-60,20,0.01>-Lectura: banda 1-2 kHz vs referencia
+slider34:0<-60,20,0.01>-Lectura: banda 2-4 kHz vs referencia
+slider35:0<-60,20,0.01>-Lectura: banda 4-8 kHz vs referencia
+slider36:0<-60,20,0.01>-Lectura: banda 8-15 kHz vs referencia
+slider37:-60<-60,0,0.01>-Lectura: 2-5 kHz sobre el total (dB)
+slider38:0<-1000000000,1000000000,0.000001>-Lectura: escala FFT hacia adelante (diagnostico)
+slider39:0<-1000000000,1000000000,0.000001>-Lectura: escala FFT ida y vuelta (diagnostico)
+slider40:0<0,10,1>-Lectura: intentos en la tabla
+
+in_pin:Entrada L
+in_pin:Entrada R
+out_pin:Salida L
+out_pin:Salida R
+
+options:gfx_hz=30 no_meter gmem=NubeMeter
+
+@init
+ext_noinit = 1;
+gfx_ext_retina = 1;
+
+// ---------------------------------------------------------------- memoria
+// los buffers de FFT no pueden cruzar un limite de 65536
+F_SP = 0;                                     // FFT 16384: espectro (bandas)
+F_X = 65536; F_Y = 73728; F_C = 81920;        // FFT 8192: modelo lineal (tramas x / y, convolucion)
+F_G1 = 90112; F_G2 = 98304; F_H = 106496;     // FFT 8192: alineacion (GCC) y FIR
+F_DL = 114688; F_DE = 115712;                 // FFT 1024: distorsion (lin / error)
+SPACC = 131072;                               // 8193: |X|^2 acumulado por bin
+SXR = 140000; SXI = 144200; SXX = 148400;     // 4097: espectro cruzado del modelo lineal
+GXR = 152600; GXI = 156800;                   // 4097: espectro cruzado de la alineacion
+HF = 161000;                                  // 8192: espectro del FIR (permutado)
+WIN8 = 169200; WIN16 = 177400; WIN1 = 193800; // ventanas de Hann
+RAW = 195000; RY = 211400;                    // 16384: anillos Antes (sin alinear) / salida (mono)
+MX = 227800; MY = 244200; LIN = 260600;       // 16384: x alineada, y, salida de la convolucion (tiempo de modelo)
+SPB = 277000;                                 // 16384: anillo mono para el espectro
+DLR = 293400; DER = 294500;                   // 1024: anillos lin / error para la distorsion
+BIDX = 295600; SMAT = 296200; PXB = 297000; PEB = 297100;   // tercios de la distorsion
+KF = 297200;                                  // coeficientes de filtros (110) + pico real (48)
+tph = 297320; tbL = 297400; tbR = 297450;     // pico real: coeficientes y dos historiales de 35
+KS = 297500;                                  // estados de filtros (100)
+binC = 298000; binE = 298800; binCm = 299600; binEm = 300400; lraC = 301200; lraE = 302000;   // histogramas LUFS (800)
+BLK = 302800; BLKM = 302840; TPB = 302880;    // 30 bloques de 100 ms
+NHS = 1800; HS = 303000; HM = 304800;         // historial S / M (3 min)
+VSC = 306600;                                  // 2048 pares L/R (vectorscopio)
+R25B = 310800; R25T = 316800; R25CAP = 6000;  // bloques de 0.4 s (2-5 kHz)
+KB = 322800; KRX = 326800; KRY = 330800; KCAP = 4000;   // kicks: bloque, golpe antes / despues
+KSL = 334800;                                 // 4 golpes abiertos x 6
+EFH = 335000;                                 // 800: histograma de la envolvente del kick
+TMPH = 335800;                                // 8000: histograma temporal
+EXD = 343800; GV = 463800; FL = 583800; BCAP = 120000;  // bloques de 10 ms
+DTOT = 703800; DFLG = 943800; DCAP = 240000;  // tramas de distorsion
+ATT = 1183800; NATT = 10; ATW = 10;           // intentos (10 x 10)
+CAP = 1184000;                                // curva capturada (11)
+REFC = 1184100; TOL0 = 1184200;               // curvas de referencia (5 x 11) y tolerancias de Eladio + Myke
+BAND = 1184300; BDEV = 1184320;               // bandas medidas (relativas al integrado) y desvio
+hitmem = 1184400;                             // zonas de la interfaz
+
+// ---------------------------------------------------------------- utilidades (solo audio)
+function aclamp(x, a, b) ( x < a ? a : x > b ? b : x );
+function band_set(b, v) (
+  b == 0 ? slider28 = v : b == 1 ? slider29 = v : b == 2 ? slider30 = v : b == 3 ? slider31 = v : b == 4 ? slider32 = v :
+  b == 5 ? slider33 = v : b == 6 ? slider34 = v : b == 7 ? slider35 = v : slider36 = v;
+);
+function bq_set(c, b0, b1, b2, a0, a1, a2) ( c[0] = b0 / a0; c[1] = b1 / a0; c[2] = b2 / a0; c[3] = a1 / a0; c[4] = a2 / a0; );
+function bq(x, c, s) local(y)
+( y = c[0] * x + s[0]; s[0] = c[1] * x - c[3] * y + s[1]; s[1] = c[2] * x - c[4] * y; y; );
+
+// filtro K (BS.1770), mismas formulas que libebur128
+function kw_init() local(Kk, Vh, Vb, Qk, a0)
+(
+  Kk = tan($pi * 1681.974450955533 / srate); Qk = 0.7071752369554196;
+  Vh = 10 ^ (3.999843853973347 / 20); Vb = Vh ^ 0.4996667741545416;
+  a0 = 1 + Kk / Qk + Kk * Kk;
+  bq_set(KF, Vh + Vb * Kk / Qk + Kk * Kk, 2 * (Kk * Kk - Vh), Vh - Vb * Kk / Qk + Kk * Kk, a0, 2 * (Kk * Kk - 1), 1 - Kk / Qk + Kk * Kk);
+  Kk = tan($pi * 38.13547087602444 / srate); Qk = 0.5003270373238773;
+  a0 = 1 + Kk / Qk + Kk * Kk;
+  bq_set(KF + 5, 1, -2, 1, 1, 2 * (Kk * Kk - 1) / a0, (1 - Kk / Qk + Kk * Kk) / a0);
+);
+
+// pasa-banda Butterworth de 8o orden = scipy butter(4, [lo, hi], 'bandpass') (polos analogicos -> pasa-banda -> bilineal)
+function bp8_design(c, lo, hi) local(fs2, w1, w2, bw, w0s, k, th, pr, pi_, ar, ai, m, dr, di, sr_, si, j, nr, ni, er, ei, dd, zr, zi, a1, a2, Wc, mag, cw, sw, c2, s2)
+(
+  fs2 = 2 * srate;
+  w1 = fs2 * tan($pi * lo / srate); w2 = fs2 * tan($pi * hi / srate); bw = w2 - w1; w0s = w1 * w2;
+  Wc = 2 * atan(sqrt(w0s) / fs2); cw = cos(Wc); sw = sin(Wc); c2 = cos(2 * Wc); s2 = sin(2 * Wc);
+  mag = 1; j = 0; k = 0;
+  loop(2,
+    th = $pi * (2 * k + 5) / 8; pr = cos(th) * bw; pi_ = sin(th) * bw;
+    ar = pr * pr - pi_ * pi_ - 4 * w0s; ai = 2 * pr * pi_;           // (p bw)^2 - 4 w0^2
+    m = sqrt(ar * ar + ai * ai); dr = sqrt((m + ar) / 2); di = sqrt(max((m - ar) / 2, 0)); ai < 0 ? di = -di;
+    loop(2,
+      sr_ = (pr + ((j & 1) ? -dr : dr)) / 2; si = (pi_ + ((j & 1) ? -di : di)) / 2;
+      nr = fs2 + sr_; ni = si; er = fs2 - sr_; ei = -si; dd = er * er + ei * ei;
+      zr = (nr * er + ni * ei) / dd; zi = (ni * er - nr * ei) / dd;
+      a1 = -2 * zr; a2 = zr * zr + zi * zi;
+      c[j * 5 + 3] = a1; c[j * 5 + 4] = a2;
+      // |1 - e^-2jW| / |1 + a1 e^-jW + a2 e^-2jW|
+      mag *= sqrt((1 - c2) * (1 - c2) + s2 * s2) / sqrt((1 + a1 * cw + a2 * c2) ^ 2 + (a1 * sw + a2 * s2) ^ 2);
+      j += 1;
+    );
+    k += 1;
+  );
+  m = mag ^ -0.25; j = 0;
+  loop(4, c[j * 5] = m; c[j * 5 + 1] = 0; c[j * 5 + 2] = -m; j += 1; );
+);
+function bp8(x, c, s) ( bq(bq(bq(bq(x, c, s), c + 5, s + 2), c + 10, s + 4), c + 15, s + 6); );
+
+function rbj(c, hp, f, q) local(w, cs, al)
+(
+  w = 2 * $pi * f / srate; cs = cos(w); al = sin(w) / (2 * q);
+  hp ? bq_set(c, (1 + cs) / 2, -(1 + cs), (1 + cs) / 2, 1 + al, -2 * cs, 1 - al)
+     : bq_set(c, (1 - cs) / 2, 1 - cs, (1 - cs) / 2, 1 + al, -2 * cs, 1 - al);
+);
+function bw4(x, c, s) ( bq(bq(x, c, s), c + 5, s + 2); );
+
+// FFT real en orden natural: [DC, Nyquist, re1, im1, re2, im2, ...]
+function fftr(b, n) ( fft_real(b, n); fft_permute(b, n / 2); );
+function ifftr(b, n) ( fft_ipermute(b, n / 2); ifft_real(b, n); );
+
+// pico real: sinc con ventana de Hann, 16 coef. por fase (igual que Nube Limit)
+function tp_init() local(p, j, t, s, w, sum)
+(
+  p = 1;
+  loop(3,
+    sum = 0; j = 0;
+    loop(16, t = j - 7 - p / 4; s = abs(t) < 0.000001 ? 1 : sin($pi * t) / ($pi * t); w = 0.5 + 0.5 * cos($pi * t / 8.5);
+      tph[(p - 1) * 16 + j] = s * w; sum += s * w; j += 1; );
+    j = 0; loop(16, tph[(p - 1) * 16 + j] /= sum; j += 1; );
+    p += 1;
+  );
+);
+function tp_push(x, b) local(w, i0, s1, s2, s3, j, v)
+(
+  w = b[34]; b[w] = x; b[w + 16] = x; w = (w + 1) & 15; b[34] = w;
+  i0 = b + w; s1 = s2 = s3 = 0; j = 0;
+  loop(16, v = i0[j]; s1 += tph[j] * v; s2 += tph[16 + j] * v; s3 += tph[32 + j] * v; j += 1; );
+  max(max(abs(s1), abs(s2)), abs(s3));
+);
+
+// ---------------------------------------------------------------- inicializacion
+function design_all() local(i, f, b, k, d, ne)
+(
+  kw_init();
+  bp8_design(KF + 10, 50, 150);      // deteccion de kicks
+  bp8_design(KF + 30, 1000, 4000);   // voz en kick
+  bp8_design(KF + 50, 40, 150);      // golpe del kick
+  bp8_design(KF + 70, 2000, 5000);   // 2-5 kHz sobre el total
+  rbj(KF + 90, 0, 150, 0.5411961001461970); rbj(KF + 95, 0, 150, 1.3065629648763766);      // graves (correlacion)
+  rbj(KF + 100, 1, 2000, 0.5411961001461970); rbj(KF + 105, 1, 2000, 1.3065629648763766);  // agudos (correlacion)
+  tp_init();
+  i = 0; loop(8192, WIN8[i] = 0.5 - 0.5 * cos(2 * $pi * i / 8192); i += 1; );
+  i = 0; loop(16384, WIN16[i] = 0.5 - 0.5 * cos(2 * $pi * i / 16384); i += 1; );
+  i = 0; loop(1024, WIN1[i] = 0.5 - 0.5 * cos(2 * $pi * i / 1024); i += 1; );
+  // tercios para la distorsion (como master_sim.distorsion): bordes 25 * 2^(k/3) por debajo de 18 kHz
+  ne = 0; while (25 * 2 ^ (ne / 3) < 18000) ( ne += 1; );
+  NBD = ne - 1;
+  k = 0; loop(513, f = k * srate / 1024; BIDX[k] = -1;
+    b = 0; loop(NBD, (f >= 25 * 2 ^ (b / 3) && f < 25 * 2 ^ ((b + 1) / 3)) ? BIDX[k] = b; b += 1; ); k += 1; );
+  b = 0; loop(NBD, k = 0; loop(NBD, d = b - k; SMAT[b * NBD + k] = 10 ^ (-(8 * abs(d) * (d >= 0 ? 1 : 2)) / 10); k += 1; ); b += 1; );
+  // escala de la FFT de JSFX: hacia adelante (coseno en el bin 3: numpy da N/2) y de ida y vuelta (impulso: numpy da 1)
+  i = 0; loop(16384, F_SP[i] = cos(2 * $pi * 3 * i / 16384); i += 1; ); fftr(F_SP, 16384); FWD = F_SP[6] / 8192;
+  memset(F_C, 0, 8192); F_C[0] = 1; fftr(F_C, 8192); ifftr(F_C, 8192); RT8 = F_C[0];
+  slider38 = FWD; slider39 = RT8;
+  BK = floor(srate / 100); GA = floor(0.04 * srate); GB = floor(0.3 * srate);
+  lu_len = floor(0.1 * srate); pr_blk = floor(srate * 0.05); r_len = floor(0.4 * srate);
+  kf_f = exp(-1 / (0.002 * srate)); kf_s = exp(-1 / (0.05 * srate));
+  lv_k = exp(-1 / (0.3 * srate));
+  S2W = 0; i = 0; loop(16384, S2W += WIN16[i] * WIN16[i]; i += 1; );
+);
+
+// curvas de referencia: bandas relativas al LUFS integrado (tests/calib.py curvas), 2-5 kHz sobre el total, correlacion
+function setc(c, b1, b2, b3, b4, b5, b6, b7, b8, b9, r, k) local(p)
+( p = REFC + c * 11; p[0] = b1; p[1] = b2; p[2] = b3; p[3] = b4; p[4] = b5; p[5] = b6; p[6] = b7; p[7] = b8; p[8] = b9; p[9] = r; p[10] = k; );
+function refs_init() local(i)
+(
+  setc(0, -9.93, -17.25, -16.88, -16.77, -16.23, -19.07, -24.09, -24.55, -26.84, -17.72, 0.917);   // Eladio + Myke
+  setc(1, -12.44, -19.46, -17.49, -15.80, -14.00, -17.81, -21.35, -21.82, -26.96, -14.23, 0.904);  // Eladio - Mbappe
+  setc(2, -7.42, -15.03, -16.27, -17.74, -18.47, -20.33, -26.83, -27.27, -26.73, -21.20, 0.929);   // Myke - Te imagino
+  setc(3, -12.32, -15.43, -18.95, -16.34, -15.84, -16.38, -18.16, -25.16, -27.30, -10.70, 0.949);  // Sean Paul - Like Glue
+  setc(4, -17.12, -14.47, -15.26, -17.03, -15.56, -18.23, -23.39, -24.58, -28.16, -15.04, 0.700);  // Nube baja (master X20)
+  // tolerancia por banda del promedio Eladio + Myke: lo que difieren entre ellas / 2 + 1 dB (minimo 2.5)
+  i = 0; loop(9, TOL0[i] = max(2.5, abs(REFC[11 + i] - REFC[22 + i]) / 2 + 1); i += 1; );
+  TOL0[9] = abs(REFC[20] - REFC[31]) / 2 + 1;
+);
+
+// umbrales de limitacion (tests/calib.py techo: W71 y X1v limpios, -15 y X1c al limite, limitador -16 se dana)
+VOZ_LO = 0.35; VOZ_HI = 0.80; KICK_LO = 0.40; KICK_HI = 0.60; DIST_LO = 10; DIST_HI = 14;
+
+design_all(); refs_init();
+
+function reset_lim() (
+  model_on = 0; g_n = 0; an = 0; mm = 0; dly = -1; g_conf = 0; g_tries = 0;
+  memset(GXR, 0, 4097); memset(GXI, 0, 4097);
+  nk = 0; nkc = 0; nbk = 0; nfr = 0; lim_voz = lim_kick = lim_dist = 0; lim_ok = 0;
+);
+function reset_all() local(i) (
+  memset(binC, 0, 4800); memset(BLK, 0, 120); memset(SPACC, 0, 8193);
+  lu_acc = lu_accm = 0; lu_n = 0; lu_nb = 0; lu_bw = 0; lu_i = lu_im = -70; lu_m = lu_s = -70; lra = 0; tp_blk = 0; tp3 = 0;
+  tp_max = 0; nsp = 0; n = 0; bands_ok = 0;
+  memset(KS, 0, 100);
+  c_n = c_l = c_r = c_ll = c_rr = c_lr = 0; corr = 0; mono_loss = 0;
+  r_b = r_t = 0; r_n = 0; nr25 = 0; r25 = -60;
+  pr_pk = 0; pr_bs = 0; pr_bn = 0; pr_acc = 0; pr_nact = 0;
+  hw = 0; hn = 0; memset(HS, -100, NHS); memset(HM, -100, NHS);
+  reset_lim();
+  slider1 = slider2 = -150; slider3 = 0; slider12 = slider13 = slider14 = -70; slider15 = -100;
+  slider16 = slider17 = slider18 = slider19 = slider20 = slider21 = slider22 = slider23 = slider24 = 0;
+  slider25 = -1; slider26 = -1; slider27 = 0; slider37 = -60;
+  i = 0; loop(9, band_set(i, 0); BDEV[i] = 0; i += 1; );
+  r25_dev = 0; lim_state = -1; gen_state = 0; over_tp = low_plr = 0; plr = 0; tp_db = -100;
+  st_n = 0;
+);
+reset_all();
+// contador del Antes al cargar: si despues cambia, hay un Antes procesando (si no, es un valor viejo)
+lbase = 16 + (floor(slider6 + 0.5) - 1) * (2 * 65536 + 16); last_lbase = lbase;
+lastA = gmem[lbase]; stale = 1000000000; antes_on = 0;
+
+// ---------------------------------------------------------------- presets
+NPRESETS = 16;
+function sset(i, v) (
+  i == 5 ? ( slider5 = v; slider_automate(slider5); ) : i == 6 ? ( slider6 = v; slider_automate(slider6); ) :
+  i == 7 ? ( slider7 = v; slider_automate(slider7); ) : i == 8 ? ( slider8 = v; slider_automate(slider8); ) :
+  i == 9 ? ( slider9 = v; slider_automate(slider9); ) : i == 10 ? ( slider10 = v; slider_automate(slider10); );
+);
+// prs(curva, techo de pico real, PLR minimo, exigencia)
+function prs(c, t, p, e) ( sset(7, c); sset(8, t); sset(9, p); sset(10, e); );
+function load_preset(n)
+(
+  prs(0, -1, 8, 0);
+  n == 2 ? prs(0, -1, 9, 1) :
+  n == 3 ? prs(1, -1, 7, 2) :
+  n == 4 ? prs(1, -0.5, 6, 2) :
+  n == 5 ? prs(2, -1, 8, 0) :
+  n == 6 ? prs(3, -1, 8, 0) :
+  n == 7 ? prs(2, -1, 10, 1) :
+  n == 8 ? prs(4, -1, 8, 0);
+  n == 9 ? prs(0, -1, 7, 2);
+  n == 10 ? prs(0, -0.3, 6, 2);
+  n == 11 ? prs(0, -1.5, 10, 1);
+  n == 12 ? prs(0, -3, 12, 1);
+  n == 13 ? prs(6, -1, 0, 0);
+  n == 14 ? prs(5, -1, 8, 0);
+  n == 15 ? prs(6, -1, 8, 0);
+);
+
+// ---------------------------------------------------------------- loudness: cada 100 ms
+function lufs_block() local(i, e, em, mmv, n_, bi, tot, rel, eg, ng, mxv)
+(
+  BLK[lu_bw] = lu_acc / max(lu_n, 1); BLKM[lu_bw] = lu_accm / max(lu_n, 1); TPB[lu_bw] = tp_blk; tp_blk = 0;
+  lu_bw = (lu_bw + 1) % 30; lu_nb = min(lu_nb + 1, 30); lu_acc = lu_accm = 0; lu_n = 0;
+  e = em = 0; i = 1; loop(4, e += BLK[(lu_bw - i + 30) % 30]; em += BLKM[(lu_bw - i + 30) % 30]; i += 1; ); e /= 4; em /= 4;
+  lu_m = lu_nb >= 4 ? -0.691 + 10 * log10(e + 0.0000000000001) : -70;
+  lu_nb >= 4 && lu_m > -70 ? ( bi = aclamp(floor((lu_m + 70) * 10), 0, 799); binC[bi] += 1; binE[bi] += e; );
+  mmv = lu_nb >= 4 ? -0.691 + 10 * log10(em + 0.0000000000001) : -70;
+  lu_nb >= 4 && mmv > -70 ? ( bi = aclamp(floor((mmv + 70) * 10), 0, 799); binCm[bi] += 1; binEm[bi] += em; );
+  e = 0; i = 1; loop(30, e += BLK[(lu_bw - i + 30) % 30]; i += 1; );
+  lu_s = lu_nb >= 30 ? -0.691 + 10 * log10(e / 30 + 0.0000000000001) : lu_m;
+  lu_nb >= 30 && lu_s > -70 ? ( bi = aclamp(floor((lu_s + 70) * 10), 0, 799); lraC[bi] += 1; lraE[bi] += e / 30; );
+  // integrado (compuertas -70 y -10 LU), estereo y mono
+  tot = 0; n_ = 0; i = 0; loop(800, n_ += binC[i]; tot += binE[i]; i += 1; );
+  n_ > 0 ? (
+    rel = -0.691 + 10 * log10(tot / n_) - 10; bi = aclamp(ceil((rel + 70) * 10), 0, 799);
+    eg = 0; ng = 0; i = bi; loop(800 - bi, ng += binC[i]; eg += binE[i]; i += 1; );
+    lu_i = ng > 0 ? -0.691 + 10 * log10(eg / ng) : -70;
+  );
+  tot = 0; n_ = 0; i = 0; loop(800, n_ += binCm[i]; tot += binEm[i]; i += 1; );
+  n_ > 0 ? (
+    rel = -0.691 + 10 * log10(tot / n_) - 10; bi = aclamp(ceil((rel + 70) * 10), 0, 799);
+    eg = 0; ng = 0; i = bi; loop(800 - bi, ng += binCm[i]; eg += binEm[i]; i += 1; );
+    lu_im = ng > 0 ? -0.691 + 10 * log10(eg / ng) : -70;
+  );
+  // pico real de los ultimos 3 s (PSR)
+  mxv = 0; i = 0; loop(lu_nb, mxv = max(mxv, TPB[i]); i += 1; ); tp3 = mxv;
+  HS[hw] = lu_s; HM[hw] = lu_m; hw = (hw + 1) % NHS; hn += 1;
+);
+
+// ---------------------------------------------------------------- espectro (tramas de 16384 cada 8192, como Welch)
+function spec_frame() local(i, mean, k, re, im)
+(
+  mean = 0; i = 0; loop(16384, mean += SPB[(n - 16384 + i) & 16383]; i += 1; ); mean /= 16384;
+  i = 0; loop(16384, F_SP[i] = (SPB[(n - 16384 + i) & 16383] - mean) * WIN16[i]; i += 1; );
+  fftr(F_SP, 16384);
+  SPACC[0] += F_SP[0] * F_SP[0]; SPACC[8192] += F_SP[1] * F_SP[1];
+  k = 1; loop(8191, re = F_SP[2 * k]; im = F_SP[2 * k + 1]; SPACC[k] += re * re + im * im; k += 1; );
+  nsp += 1;
+);
+
+// ---------------------------------------------------------------- alineacion Antes -> Medidor (GCC-PHAT)
+function model_start() local(i)
+(
+  model_on = 1; mm = 0;
+  memset(MX, 0, 16384); memset(MY, 0, 16384); memset(LIN, 0, 16384); memset(DLR, 0, 2200);
+  memset(SXR, 0, 4097); memset(SXI, 0, 4097); memset(SXX, 0, 4097);
+  memset(F_Y, 0, 8192); F_Y[2048] = 1; fftr(F_Y, 8192); i = 0; loop(8192, HF[i] = F_Y[i]; i += 1; );
+  memset(KS + 10, 0, 60); memset(EFH, 0, 800); memset(KSL, 0, 24);
+  ef = es = 0; k_thr = 0; k_trig = 0; k_last = -1000000000; nk = nkc = 0; nbk = 0; nfr = 0;
+  v_sx = v_sy = 0; v_n = 0; ef_tot = 0;
+);
+function gcc_frame() local(i, ex, ey, k, xr, xi, yr, yi, m, best, bv, v)
+(
+  ex = ey = 0; i = 0;
+  loop(8192, F_G1[i] = RAW[(an - 8192 + i) & 16383]; F_G2[i] = RY[(an - 8192 + i) & 16383];
+    ex += F_G1[i] * F_G1[i]; ey += F_G2[i] * F_G2[i]; F_G1[i] *= WIN8[i]; F_G2[i] *= WIN8[i]; i += 1; );
+  ex / 8192 > 0.000001 && ey / 8192 > 0.000001 ? (
+    fftr(F_G1, 8192); fftr(F_G2, 8192);
+    GXR[0] += F_G2[0] * F_G1[0]; GXR[4096] += F_G2[1] * F_G1[1];
+    k = 1; loop(4095, xr = F_G1[2 * k]; xi = F_G1[2 * k + 1]; yr = F_G2[2 * k]; yi = F_G2[2 * k + 1];
+      GXR[k] += yr * xr + yi * xi; GXI[k] += yi * xr - yr * xi; k += 1; );
+    (g_n += 1) >= 35 ? (
+      F_G1[0] = GXR[0] / (abs(GXR[0]) + 0.00000000000000000001); F_G1[1] = GXR[4096] / (abs(GXR[4096]) + 0.00000000000000000001);
+      k = 1; loop(4095, m = sqrt(GXR[k] * GXR[k] + GXI[k] * GXI[k]) + 0.00000000000000000001; F_G1[2 * k] = GXR[k] / m; F_G1[2 * k + 1] = GXI[k] / m; k += 1; );
+      ifftr(F_G1, 8192);
+      best = 0; bv = -1000; i = 0; loop(4096, v = F_G1[i] * FWD / RT8; v > bv ? ( bv = v; best = i; ); i += 1; );
+      g_conf = bv; g_tries += 1;
+      bv >= 0.2 ? ( dly = best; model_start(); ) : ( g_n = 0; memset(GXR, 0, 4097); memset(GXI, 0, 4097); );
+    );
+  );
+);
+
+// ---------------------------------------------------------------- modelo lineal: FIR de 4096 coef. con el espectro cruzado
+function fir_update() local(k, mxv, eps, d, hr, hi)
+(
+  mxv = 0; k = 0; loop(4097, mxv = max(mxv, SXX[k]); k += 1; );
+  eps = 0.000000001 * mxv + 0.000000000000000000000000000001;
+  k = 0;
+  loop(4097,
+    d = SXX[k] + eps; hr = SXR[k] / d; hi = SXI[k] / d;
+    k == 0 ? F_H[0] = hr : k == 4096 ? F_H[1] = hr : ( F_H[2 * k] = hr; F_H[2 * k + 1] = hi; );
+    k += 1;
+  );
+  ifftr(F_H, 8192);
+  k = 0; loop(8192, F_Y[k] = k < 4096 ? F_H[(k - 2048) & 8191] * FWD / RT8 * (0.5 + 0.5 * cos($pi * (k - 2048) / 2048)) : 0; k += 1; );
+  fftr(F_Y, 8192);
+  k = 0; loop(8192, HF[k] = F_Y[k]; k += 1; );
+);
+
+// ---------------------------------------------------------------- metricas de limitacion (por muestra, tiempo de modelo)
+function dist_frame(e_) local(k, b, re, im, tx, te, mk, nmr, worst, f2)
+(
+  k = 0; loop(1024, F_DL[k] = DLR[(e_ - 1024 + k) & 1023] * WIN1[k]; F_DE[k] = DER[(e_ - 1024 + k) & 1023] * WIN1[k]; k += 1; );
+  fftr(F_DL, 1024); fftr(F_DE, 1024);
+  memset(PXB, 0, 64); memset(PEB, 0, 64); f2 = 1 / (FWD * FWD);
+  k = 0;
+  loop(513,
+    b = BIDX[k];
+    b >= 0 ? (
+      k == 0 ? ( tx = F_DL[0] * F_DL[0]; te = F_DE[0] * F_DE[0]; ) :
+      k == 512 ? ( tx = F_DL[1] * F_DL[1]; te = F_DE[1] * F_DE[1]; ) :
+      ( re = F_DL[2 * k]; im = F_DL[2 * k + 1]; tx = re * re + im * im; re = F_DE[2 * k]; im = F_DE[2 * k + 1]; te = re * re + im * im; );
+      PXB[b] += tx * f2; PEB[b] += te * f2;
+    );
+    k += 1;
+  );
+  worst = -1000; tx = 0; b = 0;
+  loop(NBD,
+    mk = 0; k = 0; loop(NBD, mk += SMAT[b * NBD + k] * PXB[k]; k += 1; );
+    nmr = 10 * log10((PEB[b] + 0.00000000000001) / (mk * 0.0630957344480193 + 0.00000000000001));
+    worst = max(worst, nmr); tx += PXB[b];
+    b += 1;
+  );
+  nfr < DCAP ? ( DTOT[nfr] = 10 * log10(tx + 0.000000000000000000000000000001); DFLG[nfr] = worst > 0; nfr += 1; );
+);
+function lim_sample(l, yv, t) local(kenv, trig, s, p, d, gl, gy, vl, vy, ex, ey, v, j, c)
+(
+  // kicks: banda 50-150, envolventes 2 / 50 ms, rapida > 2 x lenta y > percentil 70 de la rapida
+  kenv = abs(bp8(l, KF + 10, KS + 10));
+  ef = (1 - kf_f) * kenv + kf_f * ef; es = (1 - kf_s) * kenv + kf_s * es;
+  trig = ef > es * 2 && ef > k_thr;
+  trig && !k_trig && t - k_last > 0.15 * srate ? (
+    k_last = t;
+    nk < KCAP ? ( KB[nk] = floor(t / BK); nk += 1; );
+    s = 0; p = -1; loop(4, KSL[s * 6] == 0 && p < 0 ? p = s; s += 1; );
+    p >= 0 ? ( p = KSL + p * 6; p[0] = 1; p[1] = t; p[2] = p[3] = p[4] = p[5] = 0; );
+  );
+  k_trig = trig;
+  // golpe del kick: 40-150 Hz, primeros 40 ms sobre los primeros 300 ms
+  gl = bp8(l, KF + 50, KS + 40); gy = bp8(yv, KF + 50, KS + 50);
+  s = 0;
+  loop(4,
+    p = KSL + s * 6;
+    p[0] ? (
+      d = t - p[1];
+      p[3] += gl * gl; p[5] += gy * gy;
+      d < GA ? ( p[2] += gl * gl; p[4] += gy * gy; );
+      d >= GB - 1 ? (
+        nkc < KCAP ? ( KRX[nkc] = 10 * log10(p[2] / (p[3] + 0.00000000000000000001) + 0.000000000000000000000000000001); KRY[nkc] = 10 * log10(p[4] / (p[5] + 0.00000000000000000001) + 0.000000000000000000000000000001); nkc += 1; );
+        p[0] = 0;
+      );
+    );
+    s += 1;
+  );
+  // voz en kick: 1-4 kHz en bloques de 10 ms
+  vl = bp8(l, KF + 30, KS + 20); vy = bp8(yv, KF + 30, KS + 30);
+  v_sx += vl * vl; v_sy += vy * vy;
+  (v_n += 1) >= BK ? (
+    ex = sqrt(v_sx / BK) + 0.000000001; ey = sqrt(v_sy / BK) + 0.000000001;
+    nbk < BCAP ? ( EXD[nbk] = 20 * log10(ex); GV[nbk] = 20 * log10(ey / ex); nbk += 1; );
+    v_sx = v_sy = 0; v_n = 0;
+    // percentil 70 de la envolvente rapida (histograma de 0.25 dB) para el bloque siguiente
+    v = aclamp(floor((20 * log10(ef + 0.000000000001) + 150) * 4), 0, 799); EFH[v] += 1; ef_tot += 1;
+    c = 0; j = 0; while (j < 800 && c + EFH[j] < 0.7 * ef_tot) ( c += EFH[j]; j += 1; );
+    k_thr = 10 ^ ((j / 4 - 150) / 20);
+  );
+  // distorsion: tramas de 1024 cada 512 de lin y del error
+  DLR[t & 1023] = l; DER[t & 1023] = yv - l;
+  t + 1 >= 1024 && ((t + 1 - 1024) % 512) == 0 ? dist_frame(t + 1);
+);
+function model_block() local(i, k, xr, xi, yr, yi, hr, hi, t, g)
+(
+  i = mm / 4096 - 1;
+  // espectro cruzado con la trama de 8192 que termina en este bloque
+  k = 0; loop(8192, F_X[k] = MX[(mm - 8192 + k) & 16383] * WIN8[k]; F_Y[k] = MY[(mm - 8192 + k) & 16383] * WIN8[k]; k += 1; );
+  fftr(F_X, 8192); fftr(F_Y, 8192);
+  SXR[0] += F_Y[0] * F_X[0]; SXX[0] += F_X[0] * F_X[0];
+  SXR[4096] += F_Y[1] * F_X[1]; SXX[4096] += F_X[1] * F_X[1];
+  k = 1; loop(4095, xr = F_X[2 * k]; xi = F_X[2 * k + 1]; yr = F_Y[2 * k]; yi = F_Y[2 * k + 1];
+    SXR[k] += yr * xr + yi * xi; SXI[k] += yi * xr - yr * xi; SXX[k] += xr * xr + xi * xi; k += 1; );
+  i % 12 == 11 ? fir_update();
+  // convolucion del bloque con el FIR (solapar y sumar)
+  k = 0; loop(8192, F_C[k] = k < 4096 ? MX[(mm - 4096 + k) & 16383] : 0; k += 1; );
+  fftr(F_C, 8192);
+  F_C[0] *= HF[0]; F_C[1] *= HF[1];
+  k = 1; loop(4095, xr = F_C[2 * k]; xi = F_C[2 * k + 1]; hr = HF[2 * k]; hi = HF[2 * k + 1];
+    F_C[2 * k] = xr * hr - xi * hi; F_C[2 * k + 1] = xr * hi + xi * hr; k += 1; );
+  ifftr(F_C, 8192);
+  g = 1 / (RT8 * FWD);
+  k = 0; loop(4096, LIN[(mm + k) & 16383] = 0; k += 1; );
+  k = 0; loop(8192, LIN[(mm - 4096 + k) & 16383] += F_C[k] * g; k += 1; );
+  // metricas sobre lo que ya esta completo: lin(t) = conv(t + 2048)
+  t = max(mm - 4096 - 2048, 0);
+  loop(mm - 2048 - t, lim_sample(LIN[(t + 2048) & 16383], MY[t & 16383], t); t += 1; );
+);
+
+// ---------------------------------------------------------------- lecturas
+function hmed(cnt) local(i, c) // mediana del histograma TMPH (0.01 dB, -40..+40)
+( c = 0; i = 0; while (i < 8000 && c + TMPH[i] < 0.5 * cnt) ( c += TMPH[i]; i += 1; ); (i + 0.5) / 100 - 40; );
+// baratas: cada bloque
+function quick() local(a, b, w)
+(
+  tp_db = 20 * log10(tp_max + 0.0000000001);
+  plr = lu_i > -70 && tp_max > 0 ? tp_db - lu_i : 0;
+  c_n > 1 ? ( a = c_lr - c_l * c_r / c_n; b = c_ll - c_l * c_l / c_n; w = c_rr - c_r * c_r / c_n; corr = a / sqrt(b * w + 0.000000000000000000000000000001); );
+  mono_loss = lu_i > -70 && lu_im > -70 ? lu_i - lu_im : 0;
+  over_tp = tp_max > 0 && tp_db > slider8 + 0.05;
+  low_plr = slider9 > 0 && lu_i > -70 && plr < slider9 && n > 10 * srate;
+  gen_state = max(lim_state, 0); (over_tp || low_plr) ? gen_state = max(gen_state, 1);
+  slider12 = aclamp(lu_i, -70, 10); slider13 = aclamp(lu_s, -70, 10); slider14 = aclamp(lu_m, -70, 10);
+  slider15 = tp_max > 0 ? aclamp(tp_db, -100, 30) : -100; slider16 = aclamp(plr, 0, 100);
+  slider18 = aclamp(corr, -1, 1); slider19 = aclamp(mono_loss, -10, 40);
+  slider1 = 20 * log10(pr_pk + 0.000000001); slider2 = pr_nact > 0 ? 10 * log10(pr_acc / pr_nact) : -150; slider3 = pr_nact;
+  slider40 = att_n;
+);
+// pesadas: cada 0.5 s
+function stats() local(i, k, c, cnt, p30, b, a, m1, m2, n1, n2, tmax, f, sum, lo, hi, idx, nl, nf, dv, best, tot, rel, p10, p95, bi, cv)
+(
+  // LRA: S entre p10 y p95 (compuertas -70 y -20 LU)
+  tot = 0; cnt = 0; i = 0; loop(800, cnt += lraC[i]; tot += lraE[i]; i += 1; );
+  lra = 0;
+  cnt > 1 ? (
+    rel = -0.691 + 10 * log10(tot / cnt) - 20; bi = aclamp(ceil((rel + 70) * 10), 0, 799);
+    cnt = 0; i = bi; loop(800 - bi, cnt += lraC[i]; i += 1; );
+    cnt > 1 ? (
+      c = 0; i = bi; while (i < 800 && c + lraC[i] < 0.10 * cnt) ( c += lraC[i]; i += 1; ); p10 = (i + 0.5) / 10 - 70;
+      c = 0; i = bi; while (i < 800 && c + lraC[i] < 0.95 * cnt) ( c += lraC[i]; i += 1; ); p95 = (i + 0.5) / 10 - 70;
+      lra = p95 - p10;
+    );
+  );
+  // bandas relativas al integrado
+  nsp > 0 && lu_i > -70 ? (
+    b = 0;
+    loop(9,
+      lo = b == 0 ? 30 : b == 1 ? 60 : b == 2 ? 120 : b == 3 ? 250 : b == 4 ? 500 : b == 5 ? 1000 : b == 6 ? 2000 : b == 7 ? 4000 : 8000;
+      hi = b == 0 ? 60 : b == 1 ? 120 : b == 2 ? 250 : b == 3 ? 500 : b == 4 ? 1000 : b == 5 ? 2000 : b == 6 ? 4000 : b == 7 ? 8000 : 15000;
+      sum = 0; k = ceil(lo * 16384 / srate);
+      while (k <= 8192 && k * srate / 16384 < hi) ( k * srate / 16384 >= lo ? sum += SPACC[k]; k += 1; );
+      BAND[b] = 10 * log10(sum / (FWD * FWD) / nsp * 2 / (srate * S2W) + 0.000000000000000000000000000001) - lu_i;
+      b += 1;
+    );
+    bands_ok = nsp >= 50;   // ~9 s
+  );
+  // 2-5 kHz sobre el total: mediana de los bloques de 0.4 s que suenan
+  nr25 > 0 ? (
+    tmax = 0; i = 0; loop(nr25, tmax = max(tmax, R25T[i]); i += 1; );
+    memset(TMPH, 0, 8000); cnt = 0; i = 0;
+    loop(nr25, R25T[i] > tmax * 0.001 ? ( k = aclamp(floor((10 * log10(R25B[i] / R25T[i] + 0.000000000000000000000000000001) + 40) * 100), 0, 7999); TMPH[k] += 1; cnt += 1; ); i += 1; );
+    cnt > 0 ? r25 = hmed(cnt);
+  );
+  // limitacion
+  model_on ? (
+    // voz en kick
+    lim_voz = 0; nl = nbk;
+    nk > 0 && nl > 20 ? (
+      memset(TMPH, 0, 2600); i = 0; loop(nl, k = aclamp(floor((EXD[i] + 200) * 10), 0, 2599); TMPH[k] += 1; i += 1; );
+      c = 0; i = 0; while (i < 2600 && c + TMPH[i] < 0.3 * nl) ( c += TMPH[i]; i += 1; ); p30 = i / 10 - 200;
+      memset(FL, 0, nl + 8);
+      k = 0; loop(nk, b = KB[k]; b < nl - 8 ? ( i = 0; loop(8, FL[b + i] |= 1; i < 3 ? FL[b + i] |= 2; i += 1; ); ); k += 1; );
+      memset(TMPH, 0, 8000); n1 = 0; i = 0;
+      loop(nl, (EXD[i] >= p30 && !(FL[i] & 1)) ? ( k = aclamp(floor((GV[i] + 40) * 100), 0, 7999); TMPH[k] += 1; n1 += 1; ); i += 1; );
+      m1 = hmed(n1);
+      memset(TMPH, 0, 8000); n2 = 0; i = 0;
+      loop(nl, (FL[i] & 2) ? ( k = aclamp(floor((GV[i] + 40) * 100), 0, 7999); TMPH[k] += 1; n2 += 1; ); i += 1; );
+      m2 = hmed(n2);
+      n1 > 0 && n2 > 0 ? lim_voz = m1 - m2;
+    );
+    // golpe del kick
+    lim_kick = 0;
+    nkc > 0 ? (
+      memset(TMPH, 0, 8000); i = 0; loop(nkc, k = aclamp(floor((KRX[i] + 40) * 100), 0, 7999); TMPH[k] += 1; i += 1; ); m1 = hmed(nkc);
+      memset(TMPH, 0, 8000); i = 0; loop(nkc, k = aclamp(floor((KRY[i] + 40) * 100), 0, 7999); TMPH[k] += 1; i += 1; ); m2 = hmed(nkc);
+      lim_kick = m1 - m2;
+    );
+    // distorsion: % de tramas que suenan (sobre el percentil 20) con algun tercio sobre el umbral
+    lim_dist = 0; nf = nfr;
+    nf > 0 ? (
+      memset(TMPH, 0, 3000); i = 0; loop(nf, k = aclamp(floor((DTOT[i] + 200) * 10), 0, 2999); TMPH[k] += 1; i += 1; );
+      idx = 0; c = 0; while (idx < 3000 && c + TMPH[idx] <= floor(0.2 * nf)) ( c += TMPH[idx]; idx += 1; );
+      cnt = 0; a = 0; i = 0;
+      loop(nf, k = aclamp(floor((DTOT[i] + 200) * 10), 0, 2999); k > idx ? ( cnt += 1; a += DFLG[i]; ); i += 1; );
+      lim_dist = cnt > 0 ? 100 * a / cnt : 0;
+    );
+    lim_ok = nkc >= 8 && nfr >= 200;
+  );
+  // estado de la limitacion
+  f = slider10 == 1 ? 0.75 : slider10 == 2 ? 1.3 : 1;
+  lim_state = -1;
+  lim_ok ? (
+    lim_state = 0;
+    (lim_voz >= VOZ_HI * f || lim_kick >= KICK_HI * f || lim_dist >= DIST_HI * f) ? lim_state = 2 :
+    (lim_voz > VOZ_LO * f || lim_kick > KICK_LO * f || lim_dist > DIST_LO * f) ? lim_state = 1;
+  );
+  // bandas contra la curva
+  cv = slider7; dv_max = 0; best = 0; b = 0;
+  loop(9,
+    dv = 0;
+    bands_ok && cv <= 5 && (cv < 5 || cap_ok) ? ( dv = BAND[b] - (cv == 5 ? CAP[b] : REFC[cv * 11 + b]); );
+    BDEV[b] = dv; abs(dv) > best ? ( best = abs(dv); dv_max = dv; );
+    band_set(b, aclamp(dv, -60, 20));
+    b += 1;
+  );
+  r25_dev = bands_ok && cv <= 5 && (cv < 5 || cap_ok) ? r25 - (cv == 5 ? CAP[9] : REFC[cv * 11 + 9]) : 0;
+  ref_corr = cv == 5 ? CAP[10] : cv <= 4 ? REFC[cv * 11 + 10] : 0.9;
+  slider17 = aclamp(lra, 0, 50);
+  slider20 = aclamp(lim_voz, -20, 20); slider21 = aclamp(lim_kick, -20, 20); slider22 = aclamp(lim_dist, 0, 100);
+  slider23 = aclamp(dv_max, -40, 40); slider24 = aclamp(r25_dev, -40, 40);
+  slider25 = lim_state; slider26 = model_on ? dly : -1; slider27 = nk; slider37 = nr25 > 0 ? aclamp(r25, -60, 0) : -60;
+  quick();
+);
+
+// intento: una reproduccion de 20 s o mas -> fila en la tabla (la mas nueva primero)
+function add_attempt() local(i, p)
+(
+  i = NATT - 1; loop(NATT - 1, p = ATT + i * ATW; memcpy(p, p - ATW, ATW); i -= 1; );
+  p = ATT; p[0] = play_t0; p[1] = n / srate; p[2] = lu_i; p[3] = tp_db; p[4] = plr;
+  p[5] = lim_ok ? lim_voz : -99; p[6] = lim_ok ? lim_kick : -99; p[7] = lim_ok ? lim_dist : -99; p[8] = lim_state; p[9] = 1;
+  att_n = min(att_n + 1, NATT); att_seq += 1;
+);
+function capture() local(i)
+( i = 0; loop(9, CAP[i] = BAND[i]; i += 1; ); CAP[9] = r25; CAP[10] = corr; cap_ok = 1; sset(7, 5); );
+
+@serialize
+s_v = 1; file_var(0, s_v);
+file_var(0, cap_ok); s_i = 0; loop(11, file_var(0, CAP[s_i]); s_i += 1; );
+file_var(0, att_n); file_var(0, att_seq); s_i = 0; loop(NATT * ATW, file_var(0, ATT[s_i]); s_i += 1; );
+
+@slider
+slider11 > 0 ? ( b_pn = floor(slider11 + 0.5); slider11 = 0; slider_automate(slider11); load_preset(b_pn); );
+slider4 ? ( slider4 = 0; req_reset = 1; );
+
+@block
+req_preset > 0 ? ( load_preset(req_preset); req_preset = 0; );
+req_reset ? ( req_reset = 0; reset_all(); );
+req_capture ? ( req_capture = 0; bands_ok ? capture(); );
+req_clear ? ( req_clear = 0; att_n = 0; memset(ATT, 0, NATT * ATW); );
+mode = slider5; lbase = 16 + (floor(slider6 + 0.5) - 1) * (2 * 65536 + 16);
+lbase != last_lbase ? ( last_lbase = lbase; lastA = -1; antes_on = 0; );
+// reproduccion: al empezar se reinicia todo; al parar se guarda el intento
+b_ps = (play_state & 5) > 0;
+b_ps && !last_ps ? ( reset_all(); play_t0 = play_position; );
+!b_ps && last_ps && mode == 0 ? ( n > 20 * srate && lu_i > -70 ? ( stats(); add_attempt(); ); );
+last_ps = b_ps; playing = b_ps;
+// instancia Antes: su contador avanza en cada bloque (va antes en la cadena, asi que ya proceso este bloque)
+mode == 0 ? (
+  b_A = gmem[lbase];
+  b_A != lastA && lastA >= 0 ? ( stale = 0; antes_on = 1; ) : ( stale += samplesblock; stale > srate * 0.5 ? antes_on = 0; );
+  ant_a0 = b_A - samplesblock; lastA = b_A; blk_j = 0;
+  !antes_on && (model_on || g_n > 0 || an > 0) ? reset_lim();
+  (st_n += samplesblock) >= srate * 0.5 ? ( st_n = 0; stats(); ) : quick();
+);
+
+@sample
+a_L = spl0; a_R = spl1;
+mode == 1 ? (
+  // Antes: copia la senal al enlace y no cambia nada
+  a_i = lbase + 16 + 2 * (a_cnt & 65535); gmem[a_i] = a_L; gmem[a_i + 1] = a_R; a_cnt += 1; gmem[lbase] = a_cnt;
+  a_pk = max(abs(a_L), abs(a_R)); a_pk > m_peak ? m_peak = a_pk;
+) : (
+  a_m = (a_L + a_R) * 0.5;
+  // claude_probe: pico y RMS activo (bloques de 50 ms sobre -60 dB)
+  a_pk = max(abs(a_L), abs(a_R)); a_pk > pr_pk ? pr_pk = a_pk;
+  pr_bs += a_m * a_m; (pr_bn += 1) >= pr_blk ? ( a_pe = pr_bs / pr_bn; a_pe > 0.000001 ? ( pr_acc += a_pe; pr_nact += 1; ); pr_bs = 0; pr_bn = 0; );
+  // pico real
+  a_tl = tp_push(a_L, tbL); a_tr = tp_push(a_R, tbR);
+  a_q = max(max(a_tl, a_tr), a_pk);
+  a_q > m_peak ? m_peak = a_q;
+  // vectorscopio y correlacion en vivo (total, graves < 150, agudos > 2 k)
+  VSC[vw * 2] = a_L; VSC[vw * 2 + 1] = a_R; vw = (vw + 1) & 2047;
+  a_gl = bw4(a_L, KF + 90, KS + 70); a_gr = bw4(a_R, KF + 90, KS + 74);
+  a_hl = bw4(a_L, KF + 100, KS + 80); a_hr = bw4(a_R, KF + 100, KS + 84);
+  lv_lr = lv_lr * lv_k + a_L * a_R; lv_ll = lv_ll * lv_k + a_L * a_L; lv_rr = lv_rr * lv_k + a_R * a_R;
+  lg_lr = lg_lr * lv_k + a_gl * a_gr; lg_ll = lg_ll * lv_k + a_gl * a_gl; lg_rr = lg_rr * lv_k + a_gr * a_gr;
+  lh_lr = lh_lr * lv_k + a_hl * a_hr; lh_ll = lh_ll * lv_k + a_hl * a_hl; lh_rr = lh_rr * lv_k + a_hr * a_hr;
+  playing ? (
+    a_q > tp_max ? tp_max = a_q; a_q > tp_blk ? tp_blk = a_q;
+    // loudness (estereo y mono)
+    a_kL = bq(bq(a_L, KF, KS), KF + 5, KS + 2); a_kR = bq(bq(a_R, KF, KS + 4), KF + 5, KS + 6);
+    a_km = (a_kL + a_kR) * 0.5;
+    lu_acc += a_kL * a_kL + a_kR * a_kR; lu_accm += 2 * a_km * a_km;
+    (lu_n += 1) >= lu_len ? lufs_block();
+    // correlacion de la cancion entera
+    c_l += a_L; c_r += a_R; c_ll += a_L * a_L; c_rr += a_R * a_R; c_lr += a_L * a_R; c_n += 1;
+    // 2-5 kHz sobre el total (bloques de 0.4 s)
+    a_b = bp8(a_m, KF + 70, KS + 60); r_b += a_b * a_b; r_t += a_m * a_m;
+    (r_n += 1) >= r_len ? ( nr25 < R25CAP ? ( R25B[nr25] = r_b / r_n; R25T[nr25] = r_t / r_n; nr25 += 1; ); r_b = r_t = 0; r_n = 0; );
+    // espectro
+    SPB[n & 16383] = a_m; n += 1;
+    (n & 8191) == 0 && n >= 16384 ? spec_frame();
+    // Antes -> alineacion -> modelo lineal -> metricas de limitacion
+    antes_on ? (
+      a_j = ant_a0 + blk_j; a_i = lbase + 16 + 2 * (a_j & 65535); a_xa = (gmem[a_i] + gmem[a_i + 1]) * 0.5;
+      RAW[an & 16383] = a_xa; RY[an & 16383] = a_m; an += 1;
+      !model_on ? (
+        (an & 4095) == 0 && an >= 8192 ? gcc_frame();
+      ) : (
+        MX[mm & 16383] = RAW[(an - 1 - dly) & 16383]; MY[mm & 16383] = a_m; mm += 1;
+        (mm & 4095) == 0 ? model_block();
+      );
+    );
+  );
+  blk_j += 1;
+);
+
+@gfx 1000 700
+// ======================================================================= interfaz (solo lee lo que calcula el audio)
+SC = gfx_ext_retina > 1 ? gfx_ext_retina : 1;
+WW = gfx_w; WH = gfx_h;
+
+function clamp(x, a, b) ( x < a ? a : x > b ? b : x );
+function g_set(i, v) (
+  i == 5 ? ( slider5 = v; slider_automate(slider5); ) : i == 6 ? ( slider6 = v; slider_automate(slider6); ) :
+  i == 7 ? ( slider7 = v; slider_automate(slider7); ) : i == 8 ? ( slider8 = v; slider_automate(slider8); ) :
+  i == 9 ? ( slider9 = v; slider_automate(slider9); ) : i == 10 ? ( slider10 = v; slider_automate(slider10); );
+);
+function fnt(i) (
+  i == 1 ? gfx_setfont(1, "Helvetica Neue", 13 * SC) :
+  i == 2 ? gfx_setfont(2, "Helvetica Neue", 11 * SC) :
+  i == 3 ? gfx_setfont(3, "Helvetica Neue", 17 * SC, 'b') :
+  i == 4 ? gfx_setfont(4, "Helvetica Neue", 10 * SC, 'b') :
+  i == 6 ? gfx_setfont(6, "Helvetica Neue", 15 * SC, 'b') :
+  i == 7 ? gfx_setfont(7, "Helvetica Neue", 26 * SC, 'b') :
+           gfx_setfont(5, "Helvetica Neue", 12 * SC, 'b');
+);
+function acc(a) ( gfx_set(0.42, 0.78, 1.00, a); );
+function st_rgb(s, a) ( s == 0 ? gfx_set(0.47, 0.88, 0.60, a) : s == 1 ? gfx_set(0.98, 0.80, 0.35, a) : s == 2 ? gfx_set(1.0, 0.42, 0.40, a) : gfx_set(0.55, 0.58, 0.65, a); );
+function st_name(s) ( s == 0 ? "LIMPIO" : s == 1 ? "AL LIMITE" : s == 2 ? "SE DANA" : "SIN ANTES"; );
+function hit_add(x, y, w, h, id) local(p)
+( hit_n < 200 ? ( p = hitmem + hit_n * 5; p[0] = x; p[1] = y; p[2] = w; p[3] = h; p[4] = id; hit_n += 1; ); );
+function hit_find(x, y) local(i, p, r)
+(
+  r = 0; i = hit_n - 1;
+  while (i >= 0 && r == 0) ( p = hitmem + i * 5; (x >= p[0] && x < p[0] + p[2] && y >= p[1] && y < p[1] + p[3]) ? r = p[4]; i -= 1; );
+  r;
+);
+function frect(x, y, w, h, r) (
+  r = min(r, min(w, h) * 0.5);
+  gfx_rect(x + r, y, w - 2 * r, h, 1); gfx_rect(x, y + r, r, h - 2 * r, 1); gfx_rect(x + w - r, y + r, r, h - 2 * r, 1);
+  gfx_circle(x + r, y + r, r, 1, 1); gfx_circle(x + w - r - 1, y + r, r, 1, 1);
+  gfx_circle(x + r, y + h - r - 1, r, 1, 1); gfx_circle(x + w - r - 1, y + h - r - 1, r, 1, 1);
+);
+function text_c(str, x, y, w, h) ( gfx_x = x; gfx_y = y; gfx_drawstr(str, 1 | 4, x + w, y + h); );
+function text_l(str, x, y, h) ( gfx_x = x; gfx_y = y; gfx_drawstr(str, 4, x + 3000, y + h); );
+function text_r(str, x, y, w, h) ( gfx_x = x; gfx_y = y; gfx_drawstr(str, 2 | 4, x + w, y + h); );
+function panel(x, y, w, h, title) (
+  gfx_set(0.095, 0.105, 0.135, 1); frect(x, y, w, h, 6 * SC);
+  fnt(4); gfx_set(0.55, 0.58, 0.65, 1); text_l(title, x + 12 * SC, y + 6 * SC, 16 * SC);
+);
+function button(id, x, y, w, h, str, on) local(hv)
+(
+  hv = hover_id == id;
+  on ? acc(1) : gfx_set(hv ? 0.24 : 0.17, hv ? 0.26 : 0.19, hv ? 0.31 : 0.24, 1);
+  frect(x, y, w, h, 5 * SC);
+  on ? gfx_set(0.07, 0.08, 0.10, 1) : gfx_set(0.86, 0.88, 0.92, 1);
+  fnt(1); text_c(str, x, y, w, h);
+  hit_add(x, y, w, h, id);
+);
+function dropdown(id, x, y, w, h, label, str) local(hv, tw, th, cx, cy)
+(
+  hv = hover_id == id;
+  gfx_set(hv ? 0.24 : 0.17, hv ? 0.26 : 0.19, hv ? 0.31 : 0.24, 1); frect(x, y, w, h, 5 * SC);
+  fnt(2); gfx_set(0.55, 0.58, 0.65, 1); text_l(label, x + 8 * SC, y, h);
+  strlen(label) ? gfx_measurestr(label, tw, th) : tw = -4 * SC;
+  fnt(1); gfx_set(0.90, 0.92, 0.96, 1); text_l(str, x + 12 * SC + tw, y, h);
+  gfx_set(0.55, 0.58, 0.65, 1); cx = x + w - 12 * SC; cy = y + h * 0.5;
+  gfx_triangle(cx - 4 * SC, cy - 2 * SC, cx + 4 * SC, cy - 2 * SC, cx, cy + 3 * SC);
+  hit_add(x, y, w, h, id);
+);
+function valbox(id, x, y, w, h, label, str) local(hv)
+(
+  hv = hover_id == id || (drag && drag_id == id);
+  gfx_set(hv ? 0.22 : 0.15, hv ? 0.24 : 0.17, hv ? 0.29 : 0.21, 1); frect(x, y, w, h, 4 * SC);
+  fnt(2); gfx_set(0.55, 0.58, 0.65, 1); text_l(label, x + 7 * SC, y, h);
+  fnt(5); acc(1); text_r(str, x, y, w - 7 * SC, h);
+  hit_add(x, y, w, h, id);
+);
+function curve_name(c) ( c == 0 ? "Eladio + Myke" : c == 1 ? "Eladio (Mbappe)" : c == 2 ? "Myke (Te imagino)" : c == 3 ? "Sean Paul (Like Glue)" : c == 4 ? "Nube baja (X20)" : c == 5 ? "Capturada" : "Sin referencia"; );
+function ex_name(e) ( e == 0 ? "Calibrado" : e == 1 ? "Estricto" : "Permisivo"; );
+function preset_name(k) (
+  k == 1 ? "Nube baja (calibrado)" : k == 2 ? "Streaming seguro (dinamico)" : k == 3 ? "Trap / rap fuerte" : k == 4 ? "Drill / rage (muy fuerte)" :
+  k == 5 ? "Reggaeton oscuro (mucho sub)" : k == 6 ? "Dancehall" : k == 7 ? "Lo-fi / chill (dinamico)" : k == 8 ? "Comparar con Nube baja (X20)" :
+  k == 9 ? "WhatsApp / auto (version fuerte)" : k == 10 ? "Club / DJ" : k == 11 ? "YouTube / podcast" : k == 12 ? "Premaster (antes del master)" :
+  k == 13 ? "Stem / exportar" : k == 14 ? "Referencia capturada" : k == 15 ? "Solo picos y volumen" : k == 16 ? "Por defecto" : "";
+);
+function band_name(b) ( b == 0 ? "30-60" : b == 1 ? "60-120" : b == 2 ? "120-250" : b == 3 ? "250-500" : b == 4 ? "500-1k" : b == 5 ? "1-2k" : b == 6 ? "2-4k" : b == 7 ? "4-8k" : "8-15k"; );
+function band_role(b) ( b == 0 ? "sub" : b == 1 ? "808 / bajo / kick" : b == 2 ? "cuerpo" : b == 3 ? "caja / barro" : b == 4 ? "medios" : b == 5 ? "voz" : b == 6 ? "presencia" : b == 7 ? "brillo / s" : "aire / hats"; );
+function band_tol(b) ( slider7 == 0 ? TOL0[b] : 2.5; );
+function r25_tol() ( slider7 == 0 ? TOL0[9] : 1.0; );
+function ex_f() ( slider10 == 1 ? 0.75 : slider10 == 2 ? 1.3 : 1; );
+function fmt_t(d, t) ( sprintf(d, "%d:%02d", floor(t / 60), floor(t) % 60); );
+function l2y(v) ( _hy + _hh * clamp((0 - v) / 36, 0, 1); );
+function d2y(d) ( _gy + _gh * 0.5 - _gh * 0.5 * clamp(d / 8, -1, 1); );
+function lval(x, y, lab, v, big) (
+  fnt(2); gfx_set(0.55, 0.58, 0.65, 1); text_l(lab, x, y, 14 * SC);
+  fnt(big ? 7 : 6); v > -69.9 ? sprintf(#s, "%.1f", v) : strcpy(#s, "-");
+  big ? acc(1) : gfx_set(0.92, 0.93, 0.96, 1); text_l(#s, x, y + 14 * SC, big ? 30 * SC : 20 * SC);
+);
+function cbar(y, lab, v) (
+  fnt(2); gfx_set(0.55, 0.58, 0.65, 1); text_l(lab, _cx, y, 13 * SC);
+  sprintf(#s, "%.2f", v); fnt(4); gfx_set(0.92, 0.93, 0.96, 1); text_r(#s, _cx, y, _cwd, 13 * SC);
+  gfx_set(0.13, 0.14, 0.18, 1); gfx_rect(_cx, y + 15 * SC, _cwd, 6 * SC, 1);
+  v < 0 ? st_rgb(2, 1) : v < 0.3 ? st_rgb(1, 1) : st_rgb(0, 1);
+  v >= 0 ? gfx_rect(_cx + _cwd * 0.5, y + 15 * SC, _cwd * 0.5 * clamp(v, 0, 1), 6 * SC, 1)
+         : gfx_rect(_cx + _cwd * 0.5 * (1 + clamp(v, -1, 0)), y + 15 * SC, -_cwd * 0.5 * clamp(v, -1, 0), 6 * SC, 1);
+);
+function mrow(y, lab, v, lo, hi, pct, ok) local(s, xs)
+(
+  s = !ok ? -1 : v >= hi ? 2 : v > lo ? 1 : 0;
+  fnt(2); gfx_set(0.62, 0.65, 0.72, 1); text_l(lab, _mx + 14 * SC, y, 14 * SC);
+  fnt(6); st_rgb(s, 1); ok ? sprintf(#s, pct ? "%.1f %%" : "%.2f dB", v) : strcpy(#s, "midiendo"); text_r(#s, _mx + 14 * SC, y - 2 * SC, _rw, 18 * SC);
+  xs = _rw / (hi * 1.5);
+  gfx_set(0.13, 0.14, 0.18, 1); gfx_rect(_mx + 14 * SC, y + 18 * SC, _rw, 8 * SC, 1);
+  st_rgb(0, 0.25); gfx_rect(_mx + 14 * SC, y + 18 * SC, lo * xs, 8 * SC, 1);
+  st_rgb(1, 0.25); gfx_rect(_mx + 14 * SC + lo * xs, y + 18 * SC, (hi - lo) * xs, 8 * SC, 1);
+  st_rgb(2, 0.25); gfx_rect(_mx + 14 * SC + hi * xs, y + 18 * SC, _rw - hi * xs, 8 * SC, 1);
+  ok ? ( st_rgb(s, 1); gfx_rect(_mx + 14 * SC, y + 18 * SC, clamp(v, 0, hi * 1.5) * xs, 8 * SC, 1); );
+);
+function warn(s, lvl) (
+  _ny < _nmax ? (
+    st_rgb(lvl, 1); gfx_circle(_ax + 16 * SC, _ny + 8 * SC, 3 * SC, 1, 1);
+    fnt(2); gfx_set(0.85, 0.87, 0.92, 1); gfx_x = _ax + 26 * SC; gfx_y = _ny; gfx_drawstr(s, 4, _ax + _aw3 - 8 * SC, _ny + 16 * SC);
+    _ny += 17 * SC;
+  );
+  _na += 1;
+);
+
+function hint_for(id)
+(
+  id == 1 ? strcpy(#hint, "Techo de pico real: avisa si el master pasa este nivel (dBTP). -1 es lo recomendado para streaming. Arrastra o rueda.") :
+  id == 2 ? strcpy(#hint, "PLR minimo: pico real - LUFS integrado. Si baja de aqui el master esta muy aplastado. 0 = sin aviso.") :
+  id == 30 ? strcpy(#hint, "Presets: curva de referencia, techo, PLR minimo y exigencia para cada tipo de cancion.") :
+  id == 31 ? strcpy(#hint, "Curva de referencia: contra que cancion comercial se comparan las bandas. Capturar guarda la que esta sonando.") :
+  id == 32 ? strcpy(#hint, "Exigencia: Calibrado = lo que escuchaste en Nube baja. Estricto avisa antes (x0.75), Permisivo despues (x1.3).") :
+  id == 33 ? strcpy(#hint, "Modo: Medidor va al final del master. Antes va justo antes del limitador/clipper, con el mismo enlace.") :
+  id == 34 ? strcpy(#hint, "Enlace: une un Antes con su Medidor (si tienes dos masters abiertos, usa enlaces distintos).") :
+  id == 40 ? strcpy(#hint, "Capturar: guarda las bandas de lo que esta sonando como curva 'Capturada' (pon una cancion de referencia y dale play).") :
+  id == 41 ? strcpy(#hint, "Borrar la tabla de intentos de esta cancion.") :
+  id == 42 ? strcpy(#hint, "Loudness: I = integrado, S = 3 s, M = 400 ms, LRA = rango. Se reinicia al dar play o con clic aqui.") :
+  id == 43 ? strcpy(#hint, "Limitacion: compara la senal de la instancia Antes con la salida. Umbrales calibrados con lo que escuchaste en Nube baja.") :
+  id == 44 ? strcpy(#hint, "Intentos: cada reproduccion de 20 s o mas. El techo de la cancion es el intento mas fuerte que quedo LIMPIO.") :
+  id == 45 ? strcpy(#hint, "Bandas: cuanto tiene cada zona respecto a la referencia, a igual volumen. Gris = dentro de lo normal.") :
+  id == 46 ? strcpy(#hint, "Estereo: vectorscopio, correlacion (1 = mono, 0 = muy abierto, <0 = fase) y lo que pierde en mono.") :
+  strcpy(#hint, "Nube Meter: pon uno en modo Antes antes del limitador y otro al final del master. Da play a la cancion entera.");
+);
+function menu_presets() local(r, i)
+( #m = "#PRESETS DE NUBE METER"; i = 1; loop(NPRESETS, strcat(#m, "|"); strcat(#m, preset_name(i)); i += 1; );
+  gfx_x = mouse_x; gfx_y = mouse_y; r = gfx_showmenu(#m); r >= 2 ? req_preset = r - 1; );
+function menu_curve() local(r, i)
+( #m = "#CURVA DE REFERENCIA"; i = 0; loop(7, strcat(#m, "|"); slider7 == i ? strcat(#m, "!"); (i == 5 && !cap_ok) ? strcat(#m, "#"); strcat(#m, curve_name(i)); i += 1; );
+  gfx_x = mouse_x; gfx_y = mouse_y; r = gfx_showmenu(#m); r >= 2 ? g_set(7, r - 2); );
+function menu_ex() local(r, i)
+( #m = "#EXIGENCIA"; i = 0; loop(3, strcat(#m, "|"); slider10 == i ? strcat(#m, "!"); strcat(#m, ex_name(i)); i += 1; );
+  gfx_x = mouse_x; gfx_y = mouse_y; r = gfx_showmenu(#m); r >= 2 ? g_set(10, r - 2); );
+function menu_mode() local(r)
+( #m = "#MODO|"; slider5 == 0 ? strcat(#m, "!"); strcat(#m, "Medidor (al final del master)|"); slider5 == 1 ? strcat(#m, "!"); strcat(#m, "Antes (antes del limitador)");
+  gfx_x = mouse_x; gfx_y = mouse_y; r = gfx_showmenu(#m); r >= 2 ? g_set(5, r - 2); );
+function menu_link() local(r, i)
+( #m = "#ENLACE"; i = 1; loop(4, strcat(#m, "|"); slider6 == i ? strcat(#m, "!"); sprintf(#t, "Enlace %d", i); strcat(#m, #t); i += 1; );
+  gfx_x = mouse_x; gfx_y = mouse_y; r = gfx_showmenu(#m); r >= 2 ? g_set(6, r - 1); );
+
+// ======================================================================= mouse
+_mx0 = mouse_x; _my0 = mouse_y; _lb = mouse_cap & 1; _shift = mouse_cap & 8;
+hover_id = drag ? drag_id : hit_find(_mx0, _my0);
+_lb && !last_lb ? (
+  _now = time_precise(); _dbl = _now - last_t < 0.35 && abs(_mx0 - last_x) < 6 * SC && abs(_my0 - last_y) < 6 * SC;
+  last_t = _dbl ? 0 : _now; last_x = _mx0; last_y = _my0;
+  hover_id == 1 ? ( _dbl ? g_set(8, -1) : ( drag = 1; drag_id = 1; drag_my = _my0; drag_v = slider8; ); ) :
+  hover_id == 2 ? ( _dbl ? g_set(9, 8) : ( drag = 1; drag_id = 2; drag_my = _my0; drag_v = slider9; ); ) :
+  hover_id == 30 ? menu_presets() : hover_id == 31 ? menu_curve() : hover_id == 32 ? menu_ex() :
+  hover_id == 33 ? menu_mode() : hover_id == 34 ? menu_link() :
+  hover_id == 40 ? req_capture = 1 : hover_id == 41 ? req_clear = 1 : hover_id == 42 ? req_reset = 1;
+);
+_lb && drag ? (
+  _k = _shift ? 0.1 : 1;
+  drag_id == 1 ? g_set(8, clamp(floor((drag_v + (drag_my - _my0) / (40 * SC) * _k) * 10 + 0.5) / 10, -6, 0)) :
+  drag_id == 2 ? g_set(9, clamp(floor((drag_v + (drag_my - _my0) / (20 * SC) * _k) * 2 + 0.5) / 2, 0, 20));
+);
+!_lb ? drag = 0;
+mouse_wheel != 0 ? (
+  // al menos un paso por movimiento: hacia abajo REAPER puede entregar menos de 120 y el redondeo lo borraba
+  _w = mouse_wheel / 120; _w = _w > 0 ? max(1, floor(_w + 0.5)) : min(-1, -floor(-_w + 0.5));
+  hover_id == 1 ? g_set(8, clamp(floor((slider8 + _w * 0.1) * 10 + 0.5) / 10, -6, 0)) :
+  hover_id == 2 ? g_set(9, clamp(floor((slider9 + _w * 0.5) * 2 + 0.5) / 2, 0, 20));
+  mouse_wheel = 0;
+);
+last_lb = _lb;
+
+// ======================================================================= dibujo
+hit_n = 0;
+gfx_set(0.075, 0.082, 0.105, 1); gfx_rect(0, 0, WW, WH, 1);
+TOPH = 44 * SC; FOOTH = 26 * SC; GAP = 10 * SC; MRG = 14 * SC;
+gfx_set(0.10, 0.11, 0.14, 1); gfx_rect(0, 0, WW, TOPH, 1);
+fnt(3); gfx_set(0.62, 0.80, 1.0, 1); text_l("NUBE", MRG, 0, TOPH); gfx_measurestr("NUBE ", _tw, _th);
+gfx_set(0.93, 0.94, 0.97, 1); text_l("METER", MRG + _tw, 0, TOPH);
+_x = 140 * SC; _y = 9 * SC; _h = 26 * SC;
+dropdown(33, _x, _y, 120 * SC, _h, "", slider5 ? "Modo: Antes" : "Modo: Medidor"); _x += 126 * SC;
+sprintf(#s, "Enlace %d", slider6); dropdown(34, _x, _y, 90 * SC, _h, "", #s); _x += 96 * SC;
+
+slider5 == 1 ? (
+  // ---------------------------------------------------- instancia Antes: solo explica y muestra el nivel
+  _py = TOPH + 20 * SC; panel(MRG, _py, WW - 2 * MRG, WH - _py - FOOTH - 20 * SC, "ANTES DEL LIMITADOR");
+  fnt(6); acc(1); text_l("Esta instancia no cambia el audio: copia la senal para el Medidor.", MRG + 20 * SC, _py + 40 * SC, 20 * SC);
+  fnt(1); gfx_set(0.80, 0.82, 0.88, 1);
+  text_l("1. Ponla justo ANTES del limitador / clipper del master (despues del EQ y el glue).", MRG + 20 * SC, _py + 76 * SC, 18 * SC);
+  text_l("2. Pon otro Nube Meter en modo Medidor AL FINAL del master, con el mismo enlace.", MRG + 20 * SC, _py + 98 * SC, 18 * SC);
+  text_l("3. Da play: el Medidor se alinea solo (latencia del limitador) y compara antes contra despues.", MRG + 20 * SC, _py + 120 * SC, 18 * SC);
+  sprintf(#s, "Enlace %d  -  muestras enviadas: %d", slider6, a_cnt); gfx_set(0.55, 0.58, 0.65, 1); text_l(#s, MRG + 20 * SC, _py + 156 * SC, 18 * SC);
+  _pk = 20 * log10(m_peak + 0.000000001); m_peak *= 0.85;
+  _bw = WW - 2 * MRG - 40 * SC; _lv = clamp((_pk + 60) / 60, 0, 1);
+  gfx_set(0.13, 0.14, 0.18, 1); gfx_rect(MRG + 20 * SC, _py + 190 * SC, _bw, 14 * SC, 1);
+  gfx_set(0.42, 0.85, 0.55, 1); gfx_rect(MRG + 20 * SC, _py + 190 * SC, _bw * _lv, 14 * SC, 1);
+) : (
+  // ---------------------------------------------------- Medidor
+  dropdown(30, _x, _y, 104 * SC, _h, "", "Presets"); _x += 110 * SC;
+  dropdown(31, _x, _y, 200 * SC, _h, "Curva", curve_name(slider7)); _x += 206 * SC;
+  dropdown(32, _x, _y, 150 * SC, _h, "Exigencia", ex_name(slider10)); _x += 156 * SC;
+  // estado general
+  _sw = 130 * SC; _sx = WW - MRG - _sw;
+  _sx > _x ? (
+    _s = lim_state >= 0 ? gen_state : (over_tp || low_plr) ? 1 : -1;
+    st_rgb(_s, 1); frect(_sx, _y, _sw, _h, 5 * SC);
+    fnt(5); gfx_set(0.07, 0.08, 0.10, 1); text_c(lim_state >= 0 ? st_name(gen_state) : _s == 1 ? "REVISAR" : st_name(-1), _sx, _y, _sw, _h);
+  );
+
+  _top = TOPH + GAP; _avail = WH - _top - FOOTH - GAP;
+  H1 = floor(_avail * 0.36); H2 = floor(_avail * 0.34); H3 = _avail - H1 - H2 - 2 * GAP;
+  LW = 230 * SC;
+  // ---- historial de loudness
+  _hx = MRG + 30 * SC; _hy = _top; _hw = WW - 2 * MRG - LW - GAP - 30 * SC; _hh = H1;
+  gfx_set(0.095, 0.105, 0.135, 1); gfx_rect(_hx, _hy, _hw, _hh, 1);
+  fnt(2); _d = 0;
+  while (_d >= -36) ( _yy = l2y(_d); gfx_set(1, 1, 1, _d == -14 ? 0.10 : 0.045); gfx_line(_hx, _yy, _hx + _hw - 1, _yy);
+    gfx_set(0.50, 0.53, 0.60, 1); sprintf(#s, "%d", _d); _d > -36 ? text_r(#s, 0, _yy - 7 * SC, _hx - 6 * SC, 14 * SC); _d -= 6; );
+  _np = min(hn, NHS); _ncol = floor(_hw / SC); _c = 0; _pv = -100;
+  loop(_ncol,
+    _age = (_ncol - 1 - _c) * NHS / _ncol;
+    _age < _np ? (
+      _j = (hw - 1 - floor(_age) + 2 * NHS) % NHS; _xx = _hx + _c * SC;
+      HM[_j] > -70 ? ( gfx_set(0.62, 0.65, 0.72, 0.30); gfx_line(_xx, l2y(HM[_j]), _xx, _hy + _hh - 1); );
+      HS[_j] > -70 ? ( acc(1); _pv > -70 ? gfx_line(_pxx, l2y(_pv), _xx, l2y(HS[_j]), 1); );
+      _pv = HS[_j]; _pxx = _xx;
+    ) : _pv = -100;
+    _c += 1;
+  );
+  lu_i > -70 ? ( _yy = l2y(lu_i); gfx_set(1, 1, 1, 0.55); _xx = _hx; while (_xx < _hx + _hw) ( gfx_line(_xx, _yy, min(_xx + 6 * SC, _hx + _hw - 1), _yy); _xx += 11 * SC; );
+    fnt(4); sprintf(#s, "INTEGRADO %.1f", lu_i); text_l(#s, _hx + 8 * SC, _yy - 15 * SC, 14 * SC); );
+  fnt(4); acc(1); text_l("CORTO (3 s)", _hx + 8 * SC, _hy + 6 * SC, 14 * SC);
+  gfx_set(0.62, 0.65, 0.72, 1); text_l("MOMENTANEO", _hx + 90 * SC, _hy + 6 * SC, 14 * SC);
+  gfx_set(0.50, 0.53, 0.60, 1); text_r("ULTIMOS 3 MIN  -  LINEA CLARA: -14 (STREAMING)", _hx, _hy + 6 * SC, _hw - 8 * SC, 14 * SC);
+
+  // ---- panel de loudness
+  _lx = WW - MRG - LW; panel(_lx, _top, LW, H1, "LOUDNESS (LUFS)");
+  _c1 = _lx + 12 * SC; _c2 = _lx + LW * 0.5 + 4 * SC; _ly = _top + 26 * SC; _st = (H1 - 40 * SC) / 4;
+  lval(_c1, _ly, "INTEGRADO", lu_i, 1); fnt(2); gfx_set(0.55, 0.58, 0.65, 1); text_l("LRA", _c2, _ly, 14 * SC);
+  fnt(6); gfx_set(0.92, 0.93, 0.96, 1); lu_i > -70 ? sprintf(#s, "%.1f LU", lra) : strcpy(#s, "-"); text_l(#s, _c2, _ly + 14 * SC, 20 * SC);
+  _ly += _st * 1.25;
+  lval(_c1, _ly, "CORTO (3 s)", lu_s, 0); lval(_c2, _ly, "MOMENTANEO", lu_m, 0); _ly += _st;
+  fnt(2); gfx_set(0.55, 0.58, 0.65, 1); text_l("PICO REAL MAX", _c1, _ly, 14 * SC); text_l("PLR / PSR", _c2, _ly, 14 * SC);
+  fnt(6); over_tp ? gfx_set(1, 0.45, 0.4, 1) : gfx_set(0.92, 0.93, 0.96, 1);
+  tp_max > 0 ? sprintf(#s, "%.1f dBTP", tp_db) : strcpy(#s, "-"); text_l(#s, _c1, _ly + 14 * SC, 20 * SC);
+  low_plr ? gfx_set(0.98, 0.80, 0.35, 1) : gfx_set(0.92, 0.93, 0.96, 1);
+  _psr = lu_s > -70 && tp3 > 0 ? 20 * log10(tp3) - lu_s : 0;
+  lu_i > -70 ? sprintf(#s, "%.1f / %.1f", plr, _psr) : strcpy(#s, "-"); text_l(#s, _c2, _ly + 14 * SC, 20 * SC);
+  _ly += _st;
+  _vw = LW * 0.5 - 18 * SC;
+  hit_add(_lx, _top, LW, _ly - _top, 42);
+  sprintf(#s, "%.1f", slider8); valbox(1, _c1, _ly + 6 * SC, _vw, 22 * SC, "Techo TP", #s);
+  slider9 > 0 ? sprintf(#s, "%.1f", slider9) : strcpy(#s, "-"); valbox(2, _c2, _ly + 6 * SC, _vw, 22 * SC, "PLR min", #s);
+
+  // ---- fila 2: bandas / estereo / limitacion
+  _y2 = _top + H1 + GAP; _aw = WW - 2 * MRG - 2 * GAP;
+  _bw = floor(_aw * 0.42); _ew = floor(_aw * 0.24); _mw = _aw - _bw - _ew;
+  _bx = MRG; _ex = _bx + _bw + GAP; _mx = _ex + _ew + GAP;
+  // bandas
+  hit_add(_bx, _y2, _bw, H2, 45);
+  sprintf(#s, "BANDAS vs %s", curve_name(slider7)); panel(_bx, _y2, _bw, H2, #s);
+  button(40, _bx + _bw - 92 * SC, _y2 + 5 * SC, 84 * SC, 20 * SC, "Capturar", 0);
+  _gy = _y2 + 34 * SC; _gh = H2 - 74 * SC; _gx = _bx + 34 * SC; _gw = _bw - 46 * SC; _cw = _gw / 10;
+  fnt(2);
+  _d = -8; while (_d <= 8) ( _yy = d2y(_d); gfx_set(1, 1, 1, _d == 0 ? 0.14 : 0.04); gfx_line(_gx, _yy, _gx + _gw, _yy);
+    gfx_set(0.50, 0.53, 0.60, 1); sprintf(#s, _d > 0 ? "+%d" : "%d", _d); text_r(#s, _bx, _yy - 7 * SC, 30 * SC, 14 * SC); _d += 4; );
+  slider7 == 6 || (slider7 == 5 && !cap_ok) ? (
+    fnt(1); gfx_set(0.62, 0.65, 0.72, 1); text_c(slider7 == 6 ? "Sin referencia: elige una curva arriba" : "Todavia no capturaste: pon una cancion y pulsa Capturar", _bx, _gy, _bw, _gh);
+  ) : !bands_ok ? (
+    fnt(1); gfx_set(0.62, 0.65, 0.72, 1); text_c("Midiendo... (da play unos segundos)", _bx, _gy, _bw, _gh);
+  ) : (
+    _b = 0;
+    loop(10,
+      _xx = _gx + _b * _cw + _cw * 0.18; _w = _cw * 0.64;
+      _dv = _b < 9 ? BDEV[_b] : r25_dev; _tl = (_b < 9 ? band_tol(_b) : r25_tol()) * ex_f();
+      gfx_set(1, 1, 1, 0.05); gfx_rect(_xx - _cw * 0.1, d2y(_tl), _w + _cw * 0.2, d2y(-_tl) - d2y(_tl), 1);
+      abs(_dv) <= _tl ? gfx_set(0.62, 0.65, 0.72, 1) : abs(_dv) <= _tl * 1.5 ? st_rgb(1, 1) : st_rgb(2, 1);
+      _y0 = d2y(0); _y1 = d2y(_dv); gfx_rect(_xx, min(_y0, _y1), _w, max(abs(_y1 - _y0), 2 * SC), 1);
+      fnt(4); gfx_set(0.85, 0.87, 0.92, 1); sprintf(#s, "%+.1f", _dv); text_c(#s, _xx - 10 * SC, _dv >= 0 ? _y1 - 14 * SC : _y1 + 1 * SC, _w + 20 * SC, 13 * SC);
+      gfx_set(0.55, 0.58, 0.65, 1); text_c(_b < 9 ? band_name(_b) : "2-5k/tot", _xx - 12 * SC, _gy + _gh + 4 * SC, _w + 24 * SC, 13 * SC);
+      _b += 1;
+    );
+  );
+
+  // estereo
+  panel(_ex, _y2, _ew, H2, "ESTEREO");
+  _vsz = min(_ew * 0.48, H2 - 44 * SC); _vx = _ex + 12 * SC + _vsz * 0.5; _vy = _y2 + 30 * SC + _vsz * 0.5;
+  gfx_set(0.13, 0.14, 0.18, 1); gfx_rect(_vx - _vsz * 0.5, _vy - _vsz * 0.5, _vsz, _vsz, 1);
+  gfx_set(1, 1, 1, 0.07); gfx_line(_vx, _vy - _vsz * 0.5, _vx, _vy + _vsz * 0.5); gfx_line(_vx - _vsz * 0.5, _vy, _vx + _vsz * 0.5, _vy);
+  _k = _vsz * 0.35; acc(0.45); _i = 0;
+  loop(1024, _j = ((vw - 1 - _i * 2) & 2047) * 2; _vl = VSC[_j]; _vr = VSC[_j + 1];
+    gfx_rect(_vx + clamp((_vr - _vl) * _k, -_vsz * 0.5, _vsz * 0.5), _vy - clamp((_vl + _vr) * _k, -_vsz * 0.5, _vsz * 0.5), SC, SC, 1); _i += 1; );
+  fnt(4); gfx_set(0.50, 0.53, 0.60, 1); text_c("M", _vx - 10 * SC, _vy - _vsz * 0.5 + 2 * SC, 20 * SC, 12 * SC);
+  _cx = _ex + 24 * SC + _vsz; _cwd = _ex + _ew - 12 * SC - _cx;
+  _rc = lv_lr / sqrt(lv_ll * lv_rr + 0.000000000000000000000000000001); _rg = lg_lr / sqrt(lg_ll * lg_rr + 0.000000000000000000000000000001); _rh = lh_lr / sqrt(lh_ll * lh_rr + 0.000000000000000000000000000001);
+  _cy = _y2 + 30 * SC; _cs = (H2 - 44 * SC) / 5;
+  cbar(_cy, "Correlacion", _rc); _cy += _cs;
+  cbar(_cy, "Graves <150", _rg); _cy += _cs;
+  cbar(_cy, "Agudos >2k", _rh); _cy += _cs;
+  fnt(2); gfx_set(0.55, 0.58, 0.65, 1); text_l("Cancion entera", _cx, _cy, 13 * SC);
+  fnt(4); gfx_set(0.92, 0.93, 0.96, 1); c_n > 0 ? sprintf(#s, "%.2f", corr) : strcpy(#s, "-"); text_r(#s, _cx, _cy, _cwd, 13 * SC); _cy += _cs * 0.75;
+  fnt(2); gfx_set(0.55, 0.58, 0.65, 1); text_l("En mono", _cx, _cy, 13 * SC);
+  fnt(4); mono_loss > 1 ? st_rgb(1, 1) : gfx_set(0.92, 0.93, 0.96, 1); lu_i > -70 ? sprintf(#s, "%.2f LU", mono_loss) : strcpy(#s, "-"); text_r(#s, _cx, _cy, _cwd, 13 * SC);
+  hit_add(_ex, _y2, _ew, H2, 46);
+
+  // limitacion
+  panel(_mx, _y2, _mw, H2, "LIMITACION (ANTES vs DESPUES)");
+  !antes_on ? (
+    fnt(1); gfx_set(0.80, 0.82, 0.88, 1);
+    text_l("Sin instancia Antes.", _mx + 14 * SC, _y2 + 36 * SC, 18 * SC);
+    fnt(2); gfx_set(0.62, 0.65, 0.72, 1);
+    text_l("Agrega otro Nube Meter en modo Antes justo antes", _mx + 14 * SC, _y2 + 62 * SC, 16 * SC);
+    text_l("del limitador / clipper (mismo enlace). Asi mide si la", _mx + 14 * SC, _y2 + 78 * SC, 16 * SC);
+    text_l("voz se hunde con el kick, el golpe del kick y la", _mx + 14 * SC, _y2 + 94 * SC, 16 * SC);
+    text_l("distorsion que agrega el master.", _mx + 14 * SC, _y2 + 110 * SC, 16 * SC);
+  ) : !model_on ? (
+    fnt(1); gfx_set(0.80, 0.82, 0.88, 1); text_l(playing ? "Alineando con la instancia Antes..." : "Antes conectado. Da play.", _mx + 14 * SC, _y2 + 36 * SC, 18 * SC);
+    g_tries > 0 ? ( fnt(2); gfx_set(0.98, 0.80, 0.35, 1); sprintf(#s, "No coincide (%.2f): el Antes esta en otra cadena?", g_conf); text_l(#s, _mx + 14 * SC, _y2 + 60 * SC, 16 * SC); );
+  ) : (
+    _f = ex_f(); _ry = _y2 + 32 * SC; _rs = (H2 - 64 * SC) / 3; _rw = _mw - 28 * SC;
+    mrow(_ry, "La voz baja con cada kick", lim_voz, VOZ_LO * _f, VOZ_HI * _f, 0, lim_ok); _ry += _rs;
+    mrow(_ry, "El kick pierde golpe", lim_kick, KICK_LO * _f, KICK_HI * _f, 0, lim_ok); _ry += _rs;
+    mrow(_ry, "Distorsion audible (tramas)", lim_dist, DIST_LO * _f, DIST_HI * _f, 1, lim_ok);
+    fnt(2); gfx_set(0.50, 0.53, 0.60, 1);
+    sprintf(#s, "retraso %.1f ms  -  %d kicks  -  medido ", dly / srate * 1000, nk); fmt_t(#t, nbk / 100); strcat(#s, #t);
+    text_l(#s, _mx + 14 * SC, _y2 + H2 - 20 * SC, 14 * SC);
+  );
+  hit_add(_mx, _y2, _mw, H2, 43);
+
+  // ---- fila 3: intentos y avisos
+  _y3 = _y2 + H2 + GAP; _tw3 = floor((WW - 2 * MRG - GAP) * 0.55); _aw3 = WW - 2 * MRG - GAP - _tw3; _ax = MRG + _tw3 + GAP;
+  hit_add(MRG, _y3, _tw3, H3, 44);
+  panel(MRG, _y3, _tw3, H3, "INTENTOS (CADA PLAY DE 20 s O MAS)");
+  _best = -100; _bi = -1; _i = 0; loop(att_n, _p = ATT + _i * ATW; _p[8] == 0 && _p[2] > _best ? ( _best = _p[2]; _bi = _i; ); _i += 1; );
+  fnt(5); _bi >= 0 ? ( st_rgb(0, 1); sprintf(#s, "TECHO DE ESTA CANCION: %.1f LUFS", _best); ) : ( gfx_set(0.55, 0.58, 0.65, 1); strcpy(#s, att_n ? "TECHO: ningun intento limpio todavia" : "TECHO: da play a la cancion entera"); );
+  text_r(#s, MRG, _y3 + 6 * SC, _tw3 - 70 * SC, 16 * SC);
+  button(41, MRG + _tw3 - 62 * SC, _y3 + 5 * SC, 54 * SC, 18 * SC, "Borrar", 0);
+  _ry = _y3 + 28 * SC; _rh = 16 * SC; _i = 0;
+  fnt(4); gfx_set(0.50, 0.53, 0.60, 1);
+  _cx0 = MRG + 12 * SC;
+  text_l("#", _cx0, _ry, _rh); text_l("TRAMO", _cx0 + 24 * SC, _ry, _rh); text_l("LUFS", _cx0 + 108 * SC, _ry, _rh); text_l("dBTP", _cx0 + 158 * SC, _ry, _rh);
+  text_l("PLR", _cx0 + 206 * SC, _ry, _rh); text_l("VOZ", _cx0 + 248 * SC, _ry, _rh); text_l("KICK", _cx0 + 292 * SC, _ry, _rh); text_l("DIST", _cx0 + 338 * SC, _ry, _rh);
+  _ry += _rh;
+  while (_i < att_n && _ry + _rh < _y3 + H3 - 4 * SC) (
+    _p = ATT + _i * ATW; fnt(2);
+    _i == _bi ? ( st_rgb(0, 0.12); gfx_rect(MRG + 4 * SC, _ry, _tw3 - 8 * SC, _rh, 1); );
+    gfx_set(0.85, 0.87, 0.92, 1);
+    sprintf(#s, "%d", att_seq - _i); text_l(#s, _cx0, _ry, _rh);
+    fmt_t(#s, _p[0]); strcat(#s, " +"); fmt_t(#t, _p[1]); strcat(#s, #t); text_l(#s, _cx0 + 24 * SC, _ry, _rh);
+    sprintf(#s, "%.1f", _p[2]); text_l(#s, _cx0 + 108 * SC, _ry, _rh);
+    sprintf(#s, "%.1f", _p[3]); text_l(#s, _cx0 + 158 * SC, _ry, _rh);
+    sprintf(#s, "%.1f", _p[4]); text_l(#s, _cx0 + 206 * SC, _ry, _rh);
+    _p[5] > -90 ? ( sprintf(#s, "%.2f", _p[5]); text_l(#s, _cx0 + 248 * SC, _ry, _rh); sprintf(#s, "%.2f", _p[6]); text_l(#s, _cx0 + 292 * SC, _ry, _rh);
+      sprintf(#s, "%.0f%%", _p[7]); text_l(#s, _cx0 + 338 * SC, _ry, _rh); ) : text_l("sin Antes", _cx0 + 248 * SC, _ry, _rh);
+    fnt(4); st_rgb(_p[8], 1); text_r(_p[8] >= 0 ? st_name(_p[8]) : "-", MRG, _ry, _tw3 - 12 * SC, _rh);
+    _ry += _rh; _i += 1;
+  );
+
+  // avisos (se arman con los numeros que calcula el audio)
+  panel(_ax, _y3, _aw3, H3, "AVISOS");
+  _ny = _y3 + 26 * SC; _nmax = _y3 + H3 - 16 * SC; _f = ex_f(); _na = 0;
+  lim_ok && lim_voz > VOZ_LO * _f ? ( sprintf(#w, "La voz baja %.2f dB con cada kick (limpio <= %.2f): baja ~1 dB el empuje", lim_voz, VOZ_LO * _f); warn(#w, lim_voz >= VOZ_HI * _f ? 2 : 1); );
+  lim_ok && lim_kick > KICK_LO * _f ? ( sprintf(#w, "El kick pierde %.2f dB de golpe: menos empuje, release mas largo o estilo Punch", lim_kick); warn(#w, lim_kick >= KICK_HI * _f ? 2 : 1); );
+  lim_ok && lim_dist > DIST_LO * _f ? ( sprintf(#w, "Distorsion audible en el %.0f%% del tema (limpio <= %.0f%%): menos recorte / empuje", lim_dist, DIST_LO * _f); warn(#w, lim_dist >= DIST_HI * _f ? 2 : 1); );
+  over_tp ? ( sprintf(#w, "Pico real %.1f dBTP pasa el techo (%.1f): baja el techo o usa pico real 4x", tp_db, slider8); warn(#w, 2); );
+  low_plr ? ( sprintf(#w, "PLR %.1f: muy aplastado (minimo %.1f). Baja el limitador", plr, slider9); warn(#w, 1); );
+  bands_ok && slider7 <= 5 && (slider7 < 5 || cap_ok) ? (
+    _b = 0; loop(9, _tl = band_tol(_b) * _f; abs(BDEV[_b]) > _tl ? (
+      sprintf(#w, "%s Hz (%s) %+.1f dB vs la referencia", band_name(_b), band_role(_b), BDEV[_b]); warn(#w, abs(BDEV[_b]) > _tl * 1.5 ? 2 : 1); ); _b += 1; );
+    r25_dev > r25_tol() * _f ? ( sprintf(#w, "2-5 kHz %+.1f dB sobre la referencia: cansa el oido", r25_dev); warn(#w, 1); );
+  );
+  c_n > srate * 10 ? (
+    corr < ref_corr - 0.25 ? ( sprintf(#w, "Correlacion %.2f (referencia %.2f): muy abierta, se pierde en mono", corr, ref_corr); warn(#w, 1); );
+    mono_loss > 1 ? ( sprintf(#w, "Pierde %.1f LU en mono (celular / parlante)", mono_loss); warn(#w, 1); );
+    corr > 0.98 ? warn("Casi mono (correlacion > 0.98)", 1);
+  );
+  !antes_on ? warn("Sin instancia Antes: no se mide lo que el limitador le hace a la cancion", -1);
+  _na == 0 ? ( fnt(2); st_rgb(0, 1); text_l(lu_i > -70 ? "Todo dentro de lo calibrado." : "Da play para medir.", _ax + 14 * SC, _y3 + 28 * SC, 16 * SC); );
+);
+
+// ---- pie
+hint_for(hover_id);
+gfx_set(0.06, 0.065, 0.085, 1); gfx_rect(0, WH - FOOTH, WW, FOOTH, 1);
+fnt(2); gfx_set(0.70, 0.73, 0.80, 1); text_l(#hint, 12 * SC, WH - FOOTH, FOOTH);
